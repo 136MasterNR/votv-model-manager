@@ -62,8 +62,8 @@ jobs:
       - name: Publish Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.1.${{ github.run_number }}
+          tag_name: build.${{ github.run_number }}
           target_commitish: ${{ github.sha }}
-          name: Release v0.1.${{ github.run_number }}
+          name: build.${{ github.run_number }}
           files: dist/*
           generate_release_notes: true
