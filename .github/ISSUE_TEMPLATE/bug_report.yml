@@ -1,0 +1,39 @@
+---
+name: Bug report
+description: Something is broken or behaving unexpectedly
+title: "[Bug]: "
+labels: ["bug"]
+assignees: []
+---
+
+## What happened
+
+<!-- A clear description of the bug. What did you expect to happen, and what actually happened? -->
+
+## Steps to reproduce
+
+1. 
+2. 
+3. 
+
+## Diagnose report
+
+<!-- If a model fails to load (shows a `!`), run this in a terminal and paste the output:
+
+votv-model-manager.exe --diagnose "C:\path\to\ModelFolder"
+
+Delete this section if it does not apply. -->
+
+```
+(paste diagnose output here)
+```
+
+## Environment
+
+- **App version:** <!-- e.g. 1.2.0, or "built from source (commit abc1234)" -->
+- **OS:** <!-- e.g. Windows 11, Linux (distro), macOS -->
+- **VotV version:** <!-- if relevant -->
+
+## Anything else
+
+<!-- Screenshots, log output, the .glb file (or a link to it), etc. -->

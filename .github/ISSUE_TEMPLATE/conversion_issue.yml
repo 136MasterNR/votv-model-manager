@@ -1,0 +1,37 @@
+---
+name: Model conversion issue
+description: A .glb file converts wrong, fails to convert, or looks wrong in game
+title: "[Conversion]: "
+labels: ["conversion"]
+assignees: []
+---
+
+## The model
+
+<!-- What should the model look like? Attach or link the .glb file if you can share it. -->
+
+## What went wrong
+
+<!-- e.g. wrong scale, missing textures, bad collision, crashes the converter, looks fine in preview but wrong in game... -->
+
+## Settings used
+
+<!-- Screenshot of the editor panel, or list non-default settings (scale, collision, health, lamp, texture filters...) -->
+
+## Diagnose report
+
+<!-- Run in a terminal and paste the output:
+
+votv-model-manager.exe --diagnose "C:\path\to\ModelFolder"
+
+(adjust the path to the converted model's folder) -->
+
+```
+(paste diagnose output here)
+```
+
+## Environment
+
+- **App version:** 
+- **OS:** 
+- **Blender version** (if "Open in Blender" is involved): 
