@@ -9,6 +9,9 @@ fn main() {
         println!("cargo:rustc-env=GITHUB_RUN_NUMBER=local");
     }
 
+    // Without this, a cached build script (the CI caches `target/`) would keep an old run number: because other
+    // `rerun-if-changed` lines exist, Cargo does not look at the environment on its own.
+    println!("cargo:rerun-if-env-changed=GITHUB_RUN_NUMBER");
     println!("cargo:rerun-if-changed=assets/icon.ico");
     println!("cargo:rerun-if-changed=build.rs");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {

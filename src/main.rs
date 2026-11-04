@@ -238,6 +238,12 @@ fn attach_parent_console() {}
 /// Also used to find the window handle (`window_style`).
 pub const WINDOW_TITLE: &str = "VotV Model Manager";
 
+/// The GitHub Actions run number this exe was built by (`build.rs` passes `GITHUB_RUN_NUMBER` in; the releases are tagged
+/// `build.<number>` with the same value). `None` for a local build, where the variable does not exist.
+pub fn build_number() -> Option<u64> {
+    env!("GITHUB_RUN_NUMBER").parse().ok()
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a.starts_with("--")) {

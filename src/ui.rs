@@ -78,6 +78,8 @@ pub(crate) const EDIT_COL: Color = Color::srgb(0.47, 0.73, 1.0);
 pub(crate) const EXPORT_COL: Color = Color::srgb(0.46, 0.86, 0.56);
 pub(crate) const TEXT: Color = Color::srgb(0.90, 0.91, 0.93);
 pub(crate) const DIM: Color = Color::srgb(0.58, 0.60, 0.66);
+/// The build number next to the app title: quieter than `DIM`.
+const BUILD_GRAY: Color = Color::srgb(0.46, 0.48, 0.53);
 
 const TILE_W: f32 = 132.0;
 const ICON_SIZE: f32 = 120.0;
@@ -462,7 +464,33 @@ pub fn setup(
             ),
         );
     }
-    child(&mut commands, title, txt("VotV Model Manager", 16.0, TEXT));
+    // The name, with the build number (GitHub Actions run number) as a small gray "superscript" stuck to its top right;
+    // nothing for a local build. Both are top-aligned, so the number rides at the height of the name's capitals.
+    let name_group = child(
+        &mut commands,
+        title,
+        Node {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::FlexStart,
+            flex_shrink: 0.0,
+            ..default()
+        },
+    );
+    child(&mut commands, name_group, txt("VotV Model Manager", 16.0, TEXT));
+    if let Some(n) = crate::build_number() {
+        child(
+            &mut commands,
+            name_group,
+            (
+                txt(&n.to_string(), 10.0, BUILD_GRAY),
+                Node {
+                    margin: UiRect::left(Val::Px(3.0)),
+                    flex_shrink: 0.0,
+                    ..default()
+                },
+            ),
+        );
+    }
 
     let info = child(
         &mut commands,

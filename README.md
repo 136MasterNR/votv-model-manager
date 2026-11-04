@@ -81,7 +81,8 @@ Buttons that do not apply to the selection are dimmed. A right click on a tile j
 - **A model shows a `!`** and will not load: open a terminal and run
   `votv-model-manager.exe --diagnose "C:\path\to\ModelFolder"`
   then include the report when you ask for help.
-- **The list is empty:** check the folder path shown in the status bar. A model is a sub-folder that contains an `.obj` file.
+- **The list is empty:** the message in the list names the folder being used; pick another one under **Settings > Change folder...**. A model is a sub-folder that contains an `.obj` file.
+- **Reporting a problem:** please mention the small gray number next to the app name in the title bar (for example `42`). It is the build number, the same as the release name `build.42` you downloaded from.
 
 ## For developers
 
@@ -95,6 +96,8 @@ or for debugging:
 ```
 cargo run --features bevy/dynamic_linking
 ```
+
+The build number in the title bar is the GitHub Actions run number (`GITHUB_RUN_NUMBER`, passed in by `build.rs`); a local build has none, so nothing is shown.
 
 More technical notes are in `docs/` and `converter/README.md`.
 
