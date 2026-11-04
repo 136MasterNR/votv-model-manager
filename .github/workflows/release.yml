@@ -37,7 +37,7 @@ jobs:
         run: |
           mkdir dist
           cp target/release/votv-model-manager.exe dist/
-          cp README-new.md dist/README.md
+          cp README.md dist/README.md
           7z a votv-model-manager-windows-x64.zip ./dist/*
 
       - name: Upload package
