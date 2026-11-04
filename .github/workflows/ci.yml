@@ -1,10 +1,10 @@
+
 name: CI
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
   pull_request:
+    branches: [main]
 
 env:
   CARGO_TERM_COLOR: always
@@ -13,10 +13,12 @@ jobs:
   build:
     name: Build & test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+
     strategy:
       fail-fast: false
       matrix:
         os: [windows-latest]
+
     steps:
       - uses: actions/checkout@v4
 
@@ -24,8 +26,6 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      # Deliberately as relaxed as `cargo build --release` on a developer machine: no format check and no Clippy.
-      # The build is the gate; the tests are reported but do not fail the run.
       - name: Build
         run: cargo build --release --verbose
 
