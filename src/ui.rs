@@ -97,6 +97,8 @@ pub struct UiRefs {
     pub hint: Entity,
     pub hint_text: Entity,
     pub header_text: Entity,
+    pub limits_box: Entity,          // the printer report (printer.rs) at the preview's top left
+    pub limits_lines: [Entity; 4],
     pub status: Entity,
     pub track: Entity,
     pub thumb: Entity,
@@ -951,6 +953,36 @@ pub fn setup(
         (txt("Select a model", 15.0, DIM), Pickable::IGNORE),
     );
 
+    // The printer report: model size, one verdict per printer, a warning (`preview::printer_hud_system`). Hidden until it
+    // has something to say; not pickable, so the preview can still be dragged underneath it.
+    let limits_box = child(
+        &mut commands,
+        container,
+        (
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(10.0),
+                top: Val::Px(10.0),
+                max_width: Val::Percent(70.0),
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(2.0),
+                padding: UiRect::all(Val::Px(6.0)),
+                display: Display::None,
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.45)),
+            BorderRadius::all(Val::Px(4.0)),
+            Pickable::IGNORE,
+        ),
+    );
+    let limits_lines: [Entity; 4] = std::array::from_fn(|_| {
+        child(
+            &mut commands,
+            limits_box,
+            (txt("", 12.0, TEXT), Pickable::IGNORE),
+        )
+    });
+
     // Options fly-out (hidden until the eye button is pressed).
     // A floating "preview options" (eye) button at the preview's bottom right, on the list screen and in the editor
     // (conv_ui_system shows it); the fly-out opens above it.
@@ -1176,6 +1208,8 @@ pub fn setup(
         hint,
         hint_text,
         header_text,
+        limits_box,
+        limits_lines,
         status,
         track,
         thumb,

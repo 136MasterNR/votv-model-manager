@@ -33,6 +33,8 @@ pub struct Opts {
     pub static_light: bool, // true: the preview lights stay where they are; false: they turn with the camera
     pub aa: bool, // anti-aliasing of the preview (4x MSAA); the generated icons never use it
     pub show_hulls: bool,
+    pub show_lamp: bool, // a marker at the lamp's position (preview.rs lamp_gizmos)
+    pub printer_limits: bool, // the game printers' volumes around the model + the fit report (printer.rs)
     pub alpha: usize,
     pub drop_duplicates: bool, // converter rule: drop the untextured copy of duplicated faces
     pub debug: u8,             // 0 textures, 1 one colour per section, 2 UV checker pattern
@@ -50,6 +52,8 @@ impl Default for Opts {
             static_light: false,
             aa: true,
             show_hulls: false,
+            show_lamp: false,
+            printer_limits: false,
             alpha: 0,
             drop_duplicates: true,
             debug: 0,
@@ -76,10 +80,12 @@ pub enum OptKey {
     StaticLight,
     Aa,
     Hulls,
+    PrinterLimits,
+    LampMarker,
     Debug,
     Duplicates,
 }
-pub const ALL_KEYS: [OptKey; 13] = [
+pub const ALL_KEYS: [OptKey; 15] = [
     OptKey::Tangents,
     OptKey::FlipV,
     OptKey::FlipWinding,
@@ -91,10 +97,12 @@ pub const ALL_KEYS: [OptKey; 13] = [
     OptKey::StaticLight,
     OptKey::Aa,
     OptKey::Hulls,
+    OptKey::PrinterLimits,
+    OptKey::LampMarker,
     OptKey::Debug,
     OptKey::Duplicates,
 ];
-pub const KEY_BINDINGS: [(KeyCode, OptKey); 13] = [
+pub const KEY_BINDINGS: [(KeyCode, OptKey); 15] = [
     (KeyCode::KeyT, OptKey::Tangents),
     (KeyCode::KeyU, OptKey::FlipV),
     (KeyCode::KeyF, OptKey::FlipWinding),
@@ -106,6 +114,8 @@ pub const KEY_BINDINGS: [(KeyCode, OptKey); 13] = [
     (KeyCode::KeyS, OptKey::StaticLight),
     (KeyCode::KeyM, OptKey::Aa),
     (KeyCode::KeyH, OptKey::Hulls),
+    (KeyCode::KeyP, OptKey::PrinterLimits),
+    (KeyCode::KeyI, OptKey::LampMarker),
     (KeyCode::KeyC, OptKey::Debug),
     (KeyCode::KeyD, OptKey::Duplicates),
 ];
@@ -123,6 +133,8 @@ pub fn toggle(k: OptKey, o: &mut Opts) {
         OptKey::StaticLight => o.static_light = !o.static_light,
         OptKey::Aa => o.aa = !o.aa,
         OptKey::Hulls => o.show_hulls = !o.show_hulls,
+        OptKey::PrinterLimits => o.printer_limits = !o.printer_limits,
+        OptKey::LampMarker => o.show_lamp = !o.show_lamp,
         OptKey::Debug => o.debug = (o.debug + 1) % 3,
         OptKey::Duplicates => o.drop_duplicates = !o.drop_duplicates,
     }
@@ -149,6 +161,8 @@ pub fn opt_text(k: OptKey, o: &Opts) -> String {
         OptKey::StaticLight => format!("Static light (S): {}", on(o.static_light)),
         OptKey::Aa => format!("Anti-aliasing (M): {}", on(o.aa)),
         OptKey::Hulls => format!("Show hulls (H): {}", on(o.show_hulls)),
+        OptKey::PrinterLimits => format!("Printer limits (P): {}", on(o.printer_limits)),
+        OptKey::LampMarker => format!("Lamp position (I): {}", on(o.show_lamp)),
         OptKey::Duplicates => format!("Drop duplicate faces (D): {}", on(o.drop_duplicates)),
         OptKey::Debug => format!(
             "View (C): {}",

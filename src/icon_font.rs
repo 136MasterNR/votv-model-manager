@@ -52,6 +52,8 @@ pub mod g {
     pub const SETTINGS: Glyph = gl('\u{e8b8}'); // settings (gear)
     pub const DESCRIPTION: Glyph = gl('\u{e873}'); // description (document with lines)
     pub const MORE_TIME: Glyph = gl('\u{ea5d}'); // more_time (clock with a plus): sort by last added
+    pub const LIGHTBULB: Glyph = gl('\u{e0f0}'); // lightbulb: the lamp marker is shown (LIGHT section)
+    pub const FULLSCREEN: Glyph = gl('\u{e5d0}'); // fullscreen: the printer volumes are shown (MODEL section)
     pub const UPDATE: Glyph = gl('\u{e923}'); // update (clock with arrow): sort by last modified
     pub const SORT_BY_ALPHA: Glyph = gl('\u{e053}'); // sort_by_alpha: sort by name
     pub const VISIBILITY: Glyph = gl('\u{e8f4}'); // visibility (eye): preview options

@@ -40,7 +40,9 @@ Browse your models, check them in a 3D viewer, and import .glb files into the ap
 | Rotate | Left mouse button, drag |
 | Move the view | Right mouse button, drag |
 | Zoom | Mouse wheel |
-| More view options | The eye button at the bottom right of the preview (the options open above it): game renderer look / view, static light, **anti-aliasing (M)**, hulls and more |
+| More view options | The eye button at the bottom right of the preview (the options open above it): game renderer look / view, static light, **anti-aliasing (M)**, hulls, **printer limits (P)**, **lamp position (I)** and more |
+| See where the lamp is | Open the **LIGHT** section of the properties (a light bulb icon on its header says the marker is on; click it to switch it off), or use **Lamp position (I)** in the view options. A cross with a small diamond in the lamp's colour is drawn at the lamp's position, with a thin line from the model's origin (the small grey cross) that the offset is measured from. It follows the Offset sliders at once and shows through the model. Nothing is drawn for a model that is not a lamp |
+| Check the model against the game's printers | **Printer limits (P)** in the view options, or just open the **MODEL** section of the properties (a *fullscreen* icon on its header says the volumes are on; click it to switch them off). The preview draws the large (200 x 200 x 300 cm) and the desktop (45 x 45 x 60 cm) printer volume around the model, blue when it fits and red when it does not, with a short report at the top left. A model that is too big for every printer gets a red warning even with the volumes off |
 
 ## The model name in the editor
 
@@ -71,6 +73,7 @@ Buttons that do not apply to the selection are dimmed. A right click on a tile j
 - The first time the 3D view opens there may be a short pause while it gets ready.
 - Names with non-English letters may show up as boxes in the list.
 - **Open in Blender** appears only when Blender is found. If it is not, set it under the gear menu, **Blender path...**.
+- The printer limits come from the game's own size check, as found by reverse engineering (see `docs/printer-size-check.md`). Which model axis the game treats as "up" is not confirmed: if the report disagrees with the game, toggle **Z-up (Z)** and compare with the "SMALL BOX" values the game prints when you select the model.
 - Settings are stored in `%LocalAppData%\VotV Model Manager`.
 
 ## Something went wrong?

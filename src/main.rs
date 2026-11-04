@@ -38,6 +38,7 @@ mod import;
 mod listmenu;
 mod model;
 mod preview;
+mod printer;
 mod scene;
 mod textedit;
 mod ui;
@@ -182,6 +183,10 @@ pub fn save_config(root: &Path) {
 fn gizmo_layers(mut store: ResMut<GizmoConfigStore>) {
     let (config, _) = store.config_mut::<DefaultGizmoConfigGroup>();
     config.render_layers = RenderLayers::layer(preview::PREVIEW_LAYER);
+    // The lamp marker: preview only too, and always on top of the model (a negative bias skips the depth test).
+    let (lamp, _) = store.config_mut::<preview::LampGizmos>();
+    lamp.render_layers = RenderLayers::layer(preview::PREVIEW_LAYER);
+    lamp.depth_bias = -1.0;
 }
 
 /// With `windows_subsystem = "windows"` the process has no console, so `println!` output of the command-line modes
@@ -404,6 +409,7 @@ fn main() {
             ),
         )
         .insert_resource(dialog::ReplaceDialog::load())
+        .init_gizmo_group::<preview::LampGizmos>()
         .add_systems(Startup, (ui::setup, gizmo_layers))
         // Order matters: input and loaders first, then the converter (it feeds the preview stage), then the
         // layout and per-frame UI upkeep. The inner tuple is nested only to stay under Bevy's 20-system tuple limit.
@@ -417,6 +423,17 @@ fn main() {
                 conv_ui::slider_visuals_system,
             )
                 .chain(),
+        )
+        // The game printers' volumes and fit report in the preview (printer.rs), and the MODEL header's indicator.
+        .add_systems(
+            Update,
+            (
+                conv_ui::limits_indicator_system,
+                conv_ui::light_indicator_system,
+                preview::printer_gizmos,
+                preview::lamp_gizmos,
+                preview::printer_hud_system,
+            ),
         )
         .add_systems(
             Update,

@@ -27,7 +27,7 @@ use votv_convert::model_core::PropValue;
 use votv_convert::{CollisionQuality, Options, Severity};
 
 use crate::converter::{find_glb, ConvertState, Status, SLIDER_DELAY};
-use crate::icon_font::{g, icon, IconFont};
+use crate::icon_font::{g, icon, Glyph, IconFont};
 use crate::icons::{self, IconPipe, IconView};
 use crate::preview::{PreviewCamera, StudioLight, ThumbLight};
 use crate::scene::Opts;
@@ -670,6 +670,69 @@ pub struct OpenSections(pub Vec<bool>);
 #[derive(Resource, Default)]
 pub struct CollisionSection(pub Option<usize>);
 
+/// Index (among the section headers) of the MODEL section (it holds the Scale slider), set by `build`; opening it switches
+/// the preview's printer volumes on (`Opts::printer_limits`), so the model can be sized against the game printers.
+#[derive(Resource, Default)]
+pub struct ModelSection(pub Option<usize>);
+
+/// Index (among the section headers) of the LIGHT section, set by `build`; opening it switches the lamp marker on
+/// (`Opts::show_lamp`: where the lamp is, drawn in the preview).
+#[derive(Resource, Default)]
+pub struct LightSection(pub Option<usize>);
+
+/// The light bulb at the end of the LIGHT header: shown only while that section is open, the marker is on AND the model
+/// is a lamp (there is nothing to show for a model that is not one). Clicking it switches the marker off.
+#[derive(Component)]
+pub struct LightIndicator;
+
+pub fn light_indicator_system(
+    sections: Res<OpenSections>,
+    light: Res<LightSection>,
+    opts: Res<Opts>,
+    st: Res<ConvertState>,
+    mut q: Query<&mut Node, With<LightIndicator>>,
+) {
+    let open = light
+        .0
+        .is_some_and(|l| sections.0.get(l).copied().unwrap_or(false));
+    let want = if open && opts.show_lamp && st.opts.properties.is_lamp {
+        Display::Flex
+    } else {
+        Display::None
+    };
+    for mut n in &mut q {
+        if n.display != want {
+            n.display = want;
+        }
+    }
+}
+
+/// The "fullscreen" icon at the end of the MODEL header: shown only while that section is open AND the printer volumes
+/// are on, so it tells the user why they appeared. Clicking it switches them off.
+#[derive(Component)]
+pub struct LimitsIndicator;
+
+pub fn limits_indicator_system(
+    sections: Res<OpenSections>,
+    model: Res<ModelSection>,
+    opts: Res<Opts>,
+    mut q: Query<&mut Node, With<LimitsIndicator>>,
+) {
+    let open = model
+        .0
+        .is_some_and(|m| sections.0.get(m).copied().unwrap_or(false));
+    let want = if open && opts.printer_limits {
+        Display::Flex
+    } else {
+        Display::None
+    };
+    for mut n in &mut q {
+        if n.display != want {
+            n.display = want;
+        }
+    }
+}
+
 /// The green "visible" eye at the end of the COLLISION header: shown only while that section is open AND the preview's
 /// hull outlines are on (opening the section switches them on, so it tells the user why the hulls appeared).
 #[derive(Component)]
@@ -696,10 +759,13 @@ pub fn hull_indicator_system(
     }
 }
 
-/// Leaving the editor folds every section again (and, when COLLISION was open, switches the hull outlines off).
+/// Leaving the editor folds every section again (and, when COLLISION was open, switches the hull outlines off; when MODEL
+/// was open, the printer volumes).
 pub fn reset_sections_system(
     layout: Res<Layout>,
     collision: Res<CollisionSection>,
+    model: Res<ModelSection>,
+    light: Res<LightSection>,
     mut sections: ResMut<OpenSections>,
     mut opts: ResMut<Opts>,
     mut was_editor: Local<bool>,
@@ -708,6 +774,18 @@ pub fn reset_sections_system(
         let collision_open = collision
             .0
             .is_some_and(|c| sections.0.get(c).copied().unwrap_or(false));
+        let model_open = model
+            .0
+            .is_some_and(|m| sections.0.get(m).copied().unwrap_or(false));
+        if model_open {
+            opts.printer_limits = false;
+        }
+        if light
+            .0
+            .is_some_and(|l| sections.0.get(l).copied().unwrap_or(false))
+        {
+            opts.show_lamp = false;
+        }
         if sections.0.iter().any(|b| *b) {
             sections.0.clear();
         }
@@ -1076,6 +1154,61 @@ pub fn slider_visuals_system(
 }
 
 // ---- building ---------------------------------------------------------------------------------------
+
+/// A small icon at the right end of a section header that says "this section switched a preview overlay on". Hidden until
+/// the matching system shows it (`marker` is its component). An ABSOLUTE overlay, so showing it never changes the
+/// header's own layout. Clicking it runs `off` (switches the overlay off, the icon then hides itself) and does not fold
+/// the section.
+fn header_indicator(
+    commands: &mut Commands,
+    header: Entity,
+    font: &IconFont,
+    glyph: Glyph,
+    color: Color,
+    marker: impl Component,
+    off: fn(&mut Opts),
+) {
+    let wrap = child(
+        commands,
+        header,
+        (
+            marker,
+            Node {
+                position_type: PositionType::Absolute,
+                right: Val::Px(8.0),
+                top: Val::Px(0.0),
+                bottom: Val::Px(0.0),
+                align_items: AlignItems::Center,
+                display: Display::None,
+                ..default()
+            },
+        ),
+    );
+    child(
+        commands,
+        wrap,
+        (icon(font, glyph, 18.0, color), Pickable::IGNORE),
+    );
+    // The click must not reach the header below, which would fold the section.
+    commands.entity(wrap).observe(
+        move |mut t: Trigger<Pointer<Click>>, mut opts: ResMut<Opts>| {
+            t.propagate(false);
+            if t.event().button == PointerButton::Primary {
+                off(&mut opts);
+            }
+        },
+    );
+    commands.entity(wrap).observe(
+        |_: Trigger<Pointer<Over>>, mut commands: Commands, win: Query<Entity, With<PrimaryWindow>>| {
+            set_cursor(&mut commands, &win, SystemCursorIcon::Pointer);
+        },
+    );
+    commands.entity(wrap).observe(
+        |_: Trigger<Pointer<Out>>, mut commands: Commands, win: Query<Entity, With<PrimaryWindow>>| {
+            set_cursor(&mut commands, &win, SystemCursorIcon::Default);
+        },
+    );
+}
 
 /// Spawn the properties panel (a child of `body`, next to the preview) and the overlays inside the preview container.
 pub fn build(
@@ -1575,6 +1708,30 @@ pub fn build(
         })
         .position(|t| t == "COLLISION");
     commands.insert_resource(CollisionSection(collision_sec));
+    // The MODEL section: opening it switches the printer volumes on, like COLLISION does for the hull outlines.
+    let model_sec = rows
+        .iter()
+        .filter_map(|r| {
+            if let Row::Header(t) = r {
+                Some(*t)
+            } else {
+                None
+            }
+        })
+        .position(|t| t == "MODEL");
+    commands.insert_resource(ModelSection(model_sec));
+    // The LIGHT section: opening it switches the lamp marker on.
+    let light_sec = rows
+        .iter()
+        .filter_map(|r| {
+            if let Row::Header(t) = r {
+                Some(*t)
+            } else {
+                None
+            }
+        })
+        .position(|t| t == "LIGHT");
+    commands.insert_resource(LightSection(light_sec));
     for (i, row) in rows.iter().enumerate() {
         let mut texts_of_row: Vec<Entity> = Vec::new();
         let mut checks_of_row: Vec<Entity> = Vec::new();
@@ -1611,57 +1768,36 @@ pub fn build(
                 );
                 child(commands, node, (line(text, 13.0, TEXT), Pickable::IGNORE));
                 if collision_sec == Some(sec) {
-                    // Hidden until the section is open and the hulls are on (`hull_indicator_system`). An ABSOLUTE overlay at
-                    // the right end (full height, icon centred), so showing it never changes the header's own layout.
-                    let wrap = child(
+                    header_indicator(
                         commands,
                         node,
-                        (
-                            HullIndicator,
-                            Node {
-                                position_type: PositionType::Absolute,
-                                right: Val::Px(8.0),
-                                top: Val::Px(0.0),
-                                bottom: Val::Px(0.0),
-                                align_items: AlignItems::Center,
-                                display: Display::None,
-                                ..default()
-                            },
-                        ),
+                        font,
+                        g::VISIBILITY,
+                        EXPORT_COL,
+                        HullIndicator,
+                        |o| o.show_hulls = false,
                     );
-                    child(
+                }
+                if model_sec == Some(sec) {
+                    header_indicator(
                         commands,
-                        wrap,
-                        (
-                            icon(font, g::VISIBILITY, 18.0, EXPORT_COL),
-                            Pickable::IGNORE,
-                        ),
+                        node,
+                        font,
+                        g::FULLSCREEN,
+                        ACCENT,
+                        LimitsIndicator,
+                        |o| o.printer_limits = false,
                     );
-                    // Clicking the eye switches the hull outlines off (the eye then hides itself). The click must not
-                    // reach the header below, which would fold the section.
-                    commands.entity(wrap).observe(
-                        |mut t: Trigger<Pointer<Click>>, mut opts: ResMut<Opts>| {
-                            t.propagate(false);
-                            if t.event().button == PointerButton::Primary {
-                                opts.show_hulls = false;
-                            }
-                        },
-                    );
-                    commands.entity(wrap).observe(
-                        |t: Trigger<Pointer<Over>>,
-                         mut commands: Commands,
-                         win: Query<Entity, With<PrimaryWindow>>| {
-                            let _ = t;
-                            set_cursor(&mut commands, &win, SystemCursorIcon::Pointer);
-                        },
-                    );
-                    commands.entity(wrap).observe(
-                        |t: Trigger<Pointer<Out>>,
-                         mut commands: Commands,
-                         win: Query<Entity, With<PrimaryWindow>>| {
-                            let _ = t;
-                            set_cursor(&mut commands, &win, SystemCursorIcon::Default);
-                        },
+                }
+                if light_sec == Some(sec) {
+                    header_indicator(
+                        commands,
+                        node,
+                        font,
+                        g::LIGHTBULB,
+                        Color::srgb(1.0, 0.82, 0.3),
+                        LightIndicator,
+                        |o| o.show_lamp = false,
                     );
                 }
                 commands.entity(node).observe(
@@ -1674,6 +1810,8 @@ pub fn build(
                         let is_open =
                             |s: &OpenSections, i: usize| s.0.get(i).copied().unwrap_or(false);
                         let collision_before = collision_sec.is_some_and(|c| is_open(&s, c));
+                        let model_before = model_sec.is_some_and(|m| is_open(&s, m));
+                        let light_before = light_sec.is_some_and(|l| is_open(&s, l));
                         // Accordion: at most one section is open. Clicking the open one folds it, clicking another
                         // one folds the open one and unfolds the clicked one.
                         let opening = !is_open(&s, sec);
@@ -1683,6 +1821,14 @@ pub fn build(
                         let collision_after = collision_sec.is_some_and(|c| is_open(&s, c));
                         if collision_after != collision_before {
                             opts.show_hulls = collision_after;
+                        }
+                        let model_after = model_sec.is_some_and(|m| is_open(&s, m));
+                        if model_after != model_before {
+                            opts.printer_limits = model_after;
+                        }
+                        let light_after = light_sec.is_some_and(|l| is_open(&s, l));
+                        if light_after != light_before {
+                            opts.show_lamp = light_after;
                         }
                     },
                 );

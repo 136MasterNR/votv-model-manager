@@ -823,6 +823,188 @@ pub fn hull_gizmos(
     }
 }
 
+/// The game printers' volumes (printer.rs) around the model, as gizmo boxes: where the printed model would sit, floor on
+/// the model's lowest point and centred on it, exactly as the game places it, so a model that sticks out of a box does not
+/// fit that printer. Blue = fits, red = too big. The model is always centred on the world origin (`scene::root_for`),
+/// so the boxes need no transform of their own. Redraws on demand like `hull_gizmos`.
+pub fn printer_gizmos(
+    opts: Res<Opts>,
+    ps: Res<PreviewState>,
+    mut gizmos: Gizmos,
+    mut redraw: EventWriter<RequestRedraw>,
+    mut last: Local<Option<(bool, u64, bool)>>,
+) {
+    let now = (opts.printer_limits, ps.scene_gen, opts.z_up);
+    if *last != Some(now) {
+        *last = Some(now);
+        redraw.write(RequestRedraw);
+    }
+    if !opts.printer_limits {
+        return;
+    }
+    let Some(sc) = &ps.scene else { return };
+    let model = crate::printer::model_half(sc.loaded.data.half, opts.z_up);
+    for p in crate::printer::PRINTERS {
+        let color = if crate::printer::check(model, &p).fits {
+            Color::srgb(0.35, 0.8, 1.0)
+        } else {
+            Color::srgb(1.0, 0.3, 0.25)
+        };
+        let half = Vec3::new(p.half[0], p.half[2], p.half[1]) * UNIT; // world: x, up, z
+        let center = Vec3::new(0.0, half.y - model[2] * UNIT, 0.0);
+        let corner = |i: usize| {
+            center
+                + Vec3::new(
+                    if i & 1 == 0 { -half.x } else { half.x },
+                    if i & 2 == 0 { -half.y } else { half.y },
+                    if i & 4 == 0 { -half.z } else { half.z },
+                )
+        };
+        for i in 0..8usize {
+            for bit in [1usize, 2, 4] {
+                if i & bit == 0 {
+                    gizmos.line(corner(i), corner(i | bit), color);
+                }
+            }
+        }
+    }
+}
+
+/// Gizmo group of the lamp marker. Its own group because the marker is drawn OVER the model (no depth test): a lamp
+/// usually sits inside its model's geometry and would otherwise be hidden. Configured in `main::gizmo_layers`.
+#[derive(Default, Reflect, GizmoConfigGroup)]
+pub struct LampGizmos;
+
+/// Marks where the lamp is: a cross with a small diamond in the lamp's colour, a thin line from the model's origin (the
+/// point the offset is measured from, shown as a small grey cross) to it. In the editor it follows the CURRENT Lamp
+/// offset values at once (the real preview light moves only after the model has been converted and reloaded); on the
+/// list screen it uses the saved properties. Nothing is drawn when the model is not a lamp. The offset is in raw model
+/// axes, so the model root's transform (which also does Z-up) puts it in the world, as for the hull outlines.
+#[allow(clippy::too_many_arguments)]
+pub fn lamp_gizmos(
+    opts: Res<Opts>,
+    ps: Res<PreviewState>,
+    conv: Res<crate::converter::ConvertState>,
+    layout: Res<Layout>,
+    transforms: Query<&Transform>,
+    mut gizmos: Gizmos<LampGizmos>,
+    mut redraw: EventWriter<RequestRedraw>,
+    mut last: Local<Option<(bool, u64, Option<Transform>, Option<(Vec3, [f32; 3])>)>>,
+) {
+    let root_tf = ps
+        .scene
+        .as_ref()
+        .and_then(|sc| transforms.get(sc.built.root).ok())
+        .copied();
+    let lamp: Option<(Vec3, [f32; 3])> = ps.scene.as_ref().and_then(|sc| {
+        if layout.converter {
+            let p = &conv.opts.properties;
+            p.is_lamp.then(|| {
+                (
+                    Vec3::new(
+                        p.lamp_offset.x as f32,
+                        p.lamp_offset.y as f32,
+                        p.lamp_offset.z as f32,
+                    ),
+                    [p.lamp_color.r as f32, p.lamp_color.g as f32, p.lamp_color.b as f32],
+                )
+            })
+        } else {
+            let m = &sc.loaded.data;
+            (m.num("is_lamp", 0.0) != 0.0).then(|| {
+                let c = m.color("lamp_color").to_linear();
+                (m.vec3("lamp_offset"), [c.red, c.green, c.blue])
+            })
+        }
+    });
+    let now = (opts.show_lamp, ps.scene_gen, root_tf, lamp);
+    if *last != Some(now) {
+        *last = Some(now);
+        redraw.write(RequestRedraw);
+    }
+    if !opts.show_lamp {
+        return;
+    }
+    let (Some(sc), Some(g), Some((offset, rgb))) = (&ps.scene, root_tf, lamp) else {
+        return;
+    };
+    let at = g.transform_point(offset);
+    let origin = g.transform_point(Vec3::ZERO);
+    // Sized by the model, so it reads the same on a figurine and on a floor lamp.
+    let s = (sc.loaded.data.radius * UNIT * 0.12).clamp(0.01, 0.4);
+    let tone = |v: f32| (v + 0.35).min(1.0); // keeps a dark lamp colour visible on the dark background
+    let color = Color::linear_rgb(tone(rgb[0]), tone(rgb[1]), tone(rgb[2]));
+    let dim = Color::linear_rgb(tone(rgb[0]) * 0.55, tone(rgb[1]) * 0.55, tone(rgb[2]) * 0.55);
+    let grey = Color::srgb(0.6, 0.6, 0.65);
+    for a in [Vec3::X, Vec3::Y, Vec3::Z] {
+        gizmos.line(at - a * s, at + a * s, color);
+        gizmos.line(origin - a * s * 0.5, origin + a * s * 0.5, grey);
+    }
+    let tips = [Vec3::X, -Vec3::X, Vec3::Y, -Vec3::Y, Vec3::Z, -Vec3::Z].map(|a| at + a * s * 0.6);
+    // The diamond: every tip joined to every other, except the one straight opposite (tips come in +/- pairs).
+    for (i, a) in tips.iter().enumerate() {
+        for (j, b) in tips.iter().enumerate().skip(i + 1) {
+            if i / 2 != j / 2 {
+                gizmos.line(*a, *b, color);
+            }
+        }
+    }
+    if at.distance(origin) > s * 0.5 {
+        gizmos.line(origin, at, dim);
+    }
+}
+
+/// The printer report (printer.rs) in the HUD at the top left of the preview: the whole report while the volumes are on,
+/// only the warning while they are off and the model is too big for every printer.
+pub fn printer_hud_system(
+    ps: Res<PreviewState>,
+    opts: Res<Opts>,
+    refs: Res<UiRefs>,
+    mut nodes: Query<&mut Node>,
+    mut texts: Query<&mut Text>,
+    mut colors: Query<&mut TextColor>,
+) {
+    let lines = match &ps.scene {
+        Some(sc) => crate::printer::report(
+            crate::printer::model_half(sc.loaded.data.half, opts.z_up),
+            opts.printer_limits,
+        ),
+        None => Vec::new(),
+    };
+    let flex = |on: bool| if on { Display::Flex } else { Display::None };
+    if let Ok(mut n) = nodes.get_mut(refs.limits_box) {
+        let want = flex(!lines.is_empty());
+        if n.display != want {
+            n.display = want;
+        }
+    }
+    for (i, e) in refs.limits_lines.iter().enumerate() {
+        let line = lines.get(i);
+        if let Ok(mut n) = nodes.get_mut(*e) {
+            let want = flex(line.is_some());
+            if n.display != want {
+                n.display = want;
+            }
+        }
+        let Some((text, level)) = line else { continue };
+        if let Ok(mut t) = texts.get_mut(*e) {
+            if t.0 != *text {
+                t.0 = text.clone();
+            }
+        }
+        let color = match level {
+            crate::printer::Level::Info => Color::srgb(0.78, 0.8, 0.85),
+            crate::printer::Level::Good => Color::srgb(0.45, 0.85, 1.0),
+            crate::printer::Level::Bad => Color::srgb(1.0, 0.4, 0.35),
+        };
+        if let Ok(mut c) = colors.get_mut(*e) {
+            if c.0 != color {
+                c.0 = color;
+            }
+        }
+    }
+}
+
 /// Header text above the preview, the hint over an empty preview, and the option labels.
 pub fn preview_text(
     ps: Res<PreviewState>,

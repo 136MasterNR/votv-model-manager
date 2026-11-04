@@ -35,6 +35,8 @@ pub struct ModelData {
     pub files: HashMap<String, PathBuf>, // lowercase file name -> path
     pub center: [f32; 3],
     pub radius: f32,
+    /// Half the size of the visible geometry's bounding box along each OBJ axis, in cm (the printer check uses it).
+    pub half: [f32; 3],
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -374,6 +376,11 @@ pub fn load_model(dir: &Path) -> Result<ModelData, String> {
         (lo[2] + hi[2]) / 2.0,
     ];
     let radius = Vec3::from(hi).distance(Vec3::from(lo)) / 2.0;
+    let half = [
+        (hi[0] - lo[0]) / 2.0,
+        (hi[1] - lo[1]) / 2.0,
+        (hi[2] - lo[2]) / 2.0,
+    ];
 
     let mut cfg = HashMap::new();
     if let Some(p) = files.get("properties.cfg") {
@@ -393,6 +400,7 @@ pub fn load_model(dir: &Path) -> Result<ModelData, String> {
         files,
         center,
         radius: radius.max(0.001),
+        half,
     })
 }
 
