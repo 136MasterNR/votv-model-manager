@@ -1,12 +1,9 @@
 name: Release
 
-# Publishes a GitHub Release with the Windows build when a version tag is pushed (like ci.yml, Windows only):
-#   git tag v0.1.0
-#   git push origin v0.1.0
-# "Run workflow" (workflow_dispatch) only builds and keeps the files as workflow artifacts; it does not publish.
+# Publishes a GitHub Release with the Windows build when a version tag is pushed (like ci.yml, Windows only)
 on:
   push:
-    tags: ["v*"]
+    tags: ["Release.", "Preview.*"]
   workflow_dispatch:
 
 # Needed so the job may create the release and upload files to it.
