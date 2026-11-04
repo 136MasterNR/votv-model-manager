@@ -1,0 +1,70 @@
+name: Release
+
+# Publishes a GitHub Release with the Windows build when a version tag is pushed (like ci.yml, Windows only):
+#   git tag v0.1.0
+#   git push origin v0.1.0
+# "Run workflow" (workflow_dispatch) only builds and keeps the files as workflow artifacts; it does not publish.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+# Needed so the job may create the release and upload files to it.
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            asset: votv-model-manager-windows-x64
+            bin: votv-model-manager.exe
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release
+
+      # The icon font is compiled into the program, so the single executable is enough.
+      - name: Package
+        shell: bash
+        run: |
+          mkdir dist
+          cp "target/release/${{ matrix.bin }}" dist/
+          cp README-new.md dist/README.md
+          (cd dist && 7z a "../${{ matrix.asset }}.zip" .)
+          echo "ASSET_FILE=${{ matrix.asset }}.zip" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: ${{ env.ASSET_FILE }}
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
