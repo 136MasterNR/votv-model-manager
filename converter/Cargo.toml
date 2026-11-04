@@ -1,0 +1,9 @@
+[workspace]
+resolver = "2"
+members = ["crates/votv-model-core", "crates/votv-convert"]
+
+[profile.release]
+opt-level = 3
+
+[profile.dev]
+opt-level = 1

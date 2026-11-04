@@ -1,0 +1,222 @@
+//! All conversion settings. `Default`, serde-serializable (missing fields fall back to defaults, so saved
+//! settings keep working when fields are added), every field documented so a settings panel can be built from them.
+//!
+//! The `properties` field mirrors `properties.cfg` key for key (see `votv_model_core::PropertiesCfg`).
+
+use std::path::PathBuf;
+
+use serde::{Deserialize, Serialize};
+use votv_model_core::PropertiesCfg;
+
+use crate::error::{ConvertError, Result};
+
+/// How generated collision is built when the source has no `UCX_*` meshes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CollisionQuality {
+    /// A single convex hull of the whole model.
+    Low,
+    /// VHACD decomposition into several convex hulls (follows concave shapes).
+    High,
+}
+
+/// What to do when `<output_dir>/<name>` already exists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OverwritePolicy {
+    /// Replace it, but only if it looks like a folder this converter wrote (otherwise `OutputFolderNotOurs`).
+    /// The old folder is swapped out only after the new one is complete.
+    Replace,
+    /// Fail with `OutputExists` and touch nothing.
+    Fail,
+    /// Keep the existing folder and write to `<name>_2`, `<name>_3`, ... (the report says which name was used).
+    Rename,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ConvertOptions {
+    /// Folder that will contain the finished `<name>/` model folder. Created if missing.
+    pub output_dir: PathBuf,
+    /// Name of the model folder and of every file in it. `None` = the input file's name.
+    /// Always reduced to lower-case ASCII `[a-z0-9_]` (`votv_model_core::sanitize_name`).
+    pub output_name: Option<String>,
+    /// Behaviour when the target folder exists.
+    pub overwrite: OverwritePolicy,
+    /// With `Replace`: keep the existing `properties.cfg` (the game and the user edit it) instead of writing a
+    /// fresh one from `properties`. A settings panel that owns the cfg values should set this to `false`.
+    pub keep_existing_properties: bool,
+    /// Also write `votv_convert.json` (source path, options, converter version) so a manager can offer
+    /// "re-convert". Whether the game ignores extra files is unverified, so this is off by default.
+    pub write_sidecar: bool,
+    /// Also render `icon.png`, a small software-rendered preview of the textured model.
+    pub write_icon: bool,
+    /// Edge length in pixels of `icon.png` (16-1024).
+    pub icon_size: u32,
+
+    /// Multiplier from source units to VotV cm. glTF is metres, so 100 converts; use 1 if the model is already in cm.
+    pub scale: f64,
+    /// Place skinned meshes using the skeleton's bind data (fixes characters exported in a T-pose).
+    pub humanoid: bool,
+    /// Largest edge (px) of any single texture before it is packed into the atlas.
+    pub max_tile_size: u32,
+    /// Largest edge (px) of the final atlas; bigger atlases are shrunk to fit.
+    pub max_atlas_size: u32,
+    /// Remove parts whose material is transparent or masked. VotV has no alpha blending.
+    pub drop_transparent: bool,
+    /// Multiply base colour textures by `baseColorFactor` (the glTF spec). Off to stay identical to the old Python converter.
+    pub apply_base_color_factor: bool,
+
+    /// Generate collision from the visible geometry when the source has none. When false, only a small
+    /// box collider is written (the game needs at least one `UCX_` object or it skips health, edible and bites).
+    pub generate_collision: bool,
+    /// Ignore `UCX_*` meshes found in the source and generate collision instead.
+    pub force_generate_collision: bool,
+    /// Single hull (`Low`) or VHACD decomposition (`High`).
+    pub collision_quality: CollisionQuality,
+    /// Face cap per hull. `None` = 200 for `High`, 80 for `Low`. Hulls above the cap are simplified (stay convex).
+    pub max_hull_faces: Option<u32>,
+    /// Upper bound of hulls produced by decomposition.
+    pub max_decomp_hulls: u32,
+    /// VHACD voxel resolution per axis: higher is tighter and slower.
+    pub vhacd_resolution: u32,
+    /// Edge length (cm) of the fallback box collider placed at the bottom centre of the model. Note: the game derives
+    /// `bites` (volume / 1000) and the default health from the *hull* bounding box, so a small fallback box on a large
+    /// model gives few bites.
+    pub fallback_collision_size: f64,
+    /// Horizontal collision offset in cm (applied to X of every collision object).
+    pub collision_offset_x: f64,
+    /// Vertical collision offset in cm (applied to Y of every collision object).
+    pub collision_offset_y: f64,
+    /// Debug aid: keep the model and add a red, slightly enlarged copy of the collision. Turn off for final models.
+    pub show_collision: bool,
+    /// How far (cm) the `show_collision` copy is pushed outward. `None` = automatic: just enough to render above the
+    /// model's surface without z-fighting (0.2% of the model's size, between 0.05 and 0.5 cm). Raise it if the red copy
+    /// flickers at a distance.
+    pub show_collision_offset: Option<f64>,
+
+    /// Bake an emissive atlas when any material emits light.
+    pub emissive: bool,
+    /// Invert the normal map's green channel (glTF is OpenGL style, VotV is DirectX style).
+    pub flip_normal_green: bool,
+    /// The model's `properties.cfg` values (durability, physical material, lamp, texture filters, ...), kept apart from the conversion
+    /// settings above: their own type, documented and described field by field in `votv_model_core::PROPERTY_SPECS`. Ignored when an existing
+    /// cfg is kept (`keep_existing_properties`). Edible is simply `properties.physical_material = 8` (food).
+    pub properties: PropertiesCfg,
+}
+
+/// Shorter name for the manager.
+pub type Options = ConvertOptions;
+
+impl Default for ConvertOptions {
+    fn default() -> Self {
+        Self {
+            output_dir: PathBuf::from("."),
+            output_name: None,
+            overwrite: OverwritePolicy::Replace,
+            keep_existing_properties: true,
+            write_sidecar: false,
+            write_icon: false,
+            icon_size: 256,
+            scale: 100.0,
+            humanoid: false,
+            max_tile_size: 1024,
+            max_atlas_size: 4096,
+            drop_transparent: false,
+            apply_base_color_factor: false,
+            generate_collision: true,
+            force_generate_collision: false,
+            collision_quality: CollisionQuality::High,
+            max_hull_faces: None,
+            max_decomp_hulls: 64,
+            vhacd_resolution: 64,
+            fallback_collision_size: 33.0,
+            collision_offset_x: 0.0,
+            collision_offset_y: 0.0,
+            show_collision: false,
+            show_collision_offset: None,
+            emissive: true,
+            flip_normal_green: true,
+            properties: PropertiesCfg::default(),
+        }
+    }
+}
+
+impl ConvertOptions {
+    pub(crate) fn hull_face_cap(&self) -> usize {
+        self.max_hull_faces
+            .map(|v| v as usize)
+            .unwrap_or(match self.collision_quality {
+                CollisionQuality::High => 200,
+                CollisionQuality::Low => 80,
+            })
+    }
+
+    /// Kept so older callers compile; the properties are used as they are.
+    #[deprecated(
+        note = "use `properties` directly; the separate `edible` option is gone (physical_material 8 is food)"
+    )]
+    pub fn effective_properties(&self) -> PropertiesCfg {
+        self.properties.clone()
+    }
+
+    /// Load options saved by an earlier version (for example a `votv_convert.json` sidecar or a preset). Unknown fields are ignored,
+    /// missing ones take their defaults, and retired fields are migrated: `"edible": true` becomes `properties.physical_material = 8`.
+    pub fn from_json(text: &str) -> Result<Self> {
+        let mut v: serde_json::Value = serde_json::from_str(text)
+            .map_err(|e| ConvertError::InvalidOption(format!("not valid JSON: {e}")))?;
+        if let Some(o) = v.as_object_mut() {
+            let edible = o
+                .remove("edible")
+                .and_then(|e| e.as_bool())
+                .unwrap_or(false);
+            if edible {
+                let props = o
+                    .entry("properties")
+                    .or_insert_with(|| serde_json::json!({}));
+                if let Some(p) = props.as_object_mut() {
+                    p.insert("physical_material".into(), serde_json::json!(8));
+                }
+            }
+        }
+        serde_json::from_value(v)
+            .map_err(|e| ConvertError::InvalidOption(format!("could not read the options: {e}")))
+    }
+
+    /// The options as JSON (what the sidecar stores).
+    pub fn to_json(&self) -> String {
+        serde_json::to_string_pretty(self).unwrap_or_default()
+    }
+
+    /// Check values the converter cannot work with. `convert` calls this itself; a GUI can call it on every edit.
+    pub fn validate(&self) -> Result<()> {
+        let bad = |m: &str| Err(ConvertError::InvalidOption(m.to_string()));
+        if !(self.scale.is_finite() && self.scale > 0.0) {
+            return bad("scale must be a positive number");
+        }
+        if self.max_tile_size == 0 || self.max_atlas_size == 0 {
+            return bad("max tile / atlas size must be at least 1");
+        }
+        self.properties
+            .validate()
+            .map_err(ConvertError::InvalidOption)?;
+        if self.max_decomp_hulls == 0 {
+            return bad("max decomposition hulls must be at least 1");
+        }
+        if self.vhacd_resolution < 8 {
+            return bad("VHACD resolution must be at least 8");
+        }
+        if !(self.fallback_collision_size.is_finite() && self.fallback_collision_size > 0.0) {
+            return bad("fallback collision size must be positive");
+        }
+        if let Some(o) = self.show_collision_offset {
+            if !(o.is_finite() && (0.0..=100.0).contains(&o)) {
+                return bad("show-collision offset must be between 0 and 100 cm");
+            }
+        }
+        if self.write_icon && !(16..=1024).contains(&self.icon_size) {
+            return bad("icon size must be 16-1024");
+        }
+        Ok(())
+    }
+}

@@ -1,0 +1,40 @@
+[package]
+name = "votv-model-manager"
+version = "0.1.0"
+edition = "2021"
+description = "VotV Model Manager: browse printer models with generated icons and a 3D preview"
+
+[dependencies]
+# Pinned on purpose: Bevy's UI, mesh and input APIs change between releases.
+bevy = { version = "=0.16.1", default-features = false, features = [
+    "std", "async_executor", "multi_threaded",
+    "bevy_asset", "bevy_color", "bevy_core_pipeline", "bevy_gizmos", "bevy_log",
+    "bevy_pbr", "bevy_render", "bevy_window", "bevy_winit",
+    "bevy_ui", "bevy_text", "default_font", "bevy_picking", "bevy_ui_picking_backend",
+    "png", "tonemapping_luts", "x11", "wayland",
+] }
+tobj = "4"
+image = { version = "0.25", default-features = false, features = ["png"] }
+dirs = "5"    # Windows known-folder lookup for %LocalAppData%
+rfd = "0.15"   # native folder picker (Windows: no extra dependencies)
+# The converter (synced copy of the converter agent's workspace; see converter/INTEGRATION.md). No Bevy inside.
+# Do NOT add a [workspace] table to this manifest: converter/ is its own workspace.
+serde_json = "1"   # reads votv_convert.json (the options a model was converted with) for the Edit button
+votv-convert = { path = "converter/crates/votv-convert" }
+zip = { version = "2", default-features = false, features = ["deflate"] }   # Export writes a .zip (src/export.rs); no C codecs
+
+[profile.dev]
+opt-level = 1
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+lto = "fat"          # was "thin"; better dead-code removal
+codegen-units = 1    # slower build, smaller and faster binary
+panic = "abort"      # drops unwinding tables
+strip = true         # removes symbols and debug info
+opt-level = "s"      # optional, see below
+
+[build-dependencies]
+# Embeds assets/icon.ico in the Windows exe (Explorer, taskbar, shortcuts); see build.rs.
+winresource = "0.1"

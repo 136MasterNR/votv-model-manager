@@ -1,0 +1,9 @@
+[package]
+name = "votv-model-core"
+description = "Format knowledge about VotV printer model folders, shared by the converter and the Model Manager"
+version = "0.2.0"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
