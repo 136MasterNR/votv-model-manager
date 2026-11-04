@@ -1,37 +1,54 @@
----
 name: Model conversion issue
 description: A .glb file converts wrong, fails to convert, or looks wrong in game
 title: "[Conversion]: "
 labels: ["conversion"]
 assignees: []
----
-
-## The model
-
-<!-- What should the model look like? Attach or link the .glb file if you can share it. -->
-
-## What went wrong
-
-<!-- e.g. wrong scale, missing textures, bad collision, crashes the converter, looks fine in preview but wrong in game... -->
-
-## Settings used
-
-<!-- Screenshot of the editor panel, or list non-default settings (scale, collision, health, lamp, texture filters...) -->
-
-## Diagnose report
-
-<!-- Run in a terminal and paste the output:
-
-votv-model-manager.exe --diagnose "C:\path\to\ModelFolder"
-
-(adjust the path to the converted model's folder) -->
-
-```
-(paste diagnose output here)
-```
-
-## Environment
-
-- **App version:** 
-- **OS:** 
-- **Blender version** (if "Open in Blender" is involved): 
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Issues with the core workflow — converting a .glb into a printable model.
+  - type: textarea
+    id: model
+    attributes:
+      label: The model
+      description: What should it look like? Attach or link the .glb file if you can share it.
+    validations:
+      required: true
+  - type: textarea
+    id: what-wrong
+    attributes:
+      label: What went wrong?
+      description: e.g. wrong scale, missing textures, bad collision, converter crashes, looks fine in preview but wrong in game...
+    validations:
+      required: true
+  - type: textarea
+    id: settings
+    attributes:
+      label: Settings used
+      description: Screenshot of the editor panel, or list any non-default settings (scale, collision, health, lamp, texture filters...).
+  - type: textarea
+    id: diagnose
+    attributes:
+      label: Diagnose report
+      description: |
+        Run in a terminal and paste the output (adjust the path to the converted model's folder):
+        `votv-model-manager.exe --diagnose "C:\path	o\ModelFolder"`
+      render: shell
+  - type: input
+    id: app-version
+    attributes:
+      label: App version
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+    validations:
+      required: true
+  - type: input
+    id: blender-version
+    attributes:
+      label: Blender version
+      description: Only if "Open in Blender" is involved.

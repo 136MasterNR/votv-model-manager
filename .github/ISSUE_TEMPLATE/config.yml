@@ -1,8 +1,1 @@
 blank_issues_enabled: false
-contact_links:
-  - name: Questions & discussion
-    url: https://github.com/YOUR_USERNAME/votv-model-manager/discussions
-    about: Ask questions, share models, and discuss ideas — no issue needed.
-  - name: Voices of the Void (the game)
-    url: https://mrdrnose.itch.io/votv
-    about: Bugs in the game itself belong to the game's developer, not this tool.

@@ -1,39 +1,62 @@
----
 name: Bug report
 description: Something is broken or behaving unexpectedly
 title: "[Bug]: "
 labels: ["bug"]
 assignees: []
----
-
-## What happened
-
-<!-- A clear description of the bug. What did you expect to happen, and what actually happened? -->
-
-## Steps to reproduce
-
-1. 
-2. 
-3. 
-
-## Diagnose report
-
-<!-- If a model fails to load (shows a `!`), run this in a terminal and paste the output:
-
-votv-model-manager.exe --diagnose "C:\path\to\ModelFolder"
-
-Delete this section if it does not apply. -->
-
-```
-(paste diagnose output here)
-```
-
-## Environment
-
-- **App version:** <!-- e.g. 1.2.0, or "built from source (commit abc1234)" -->
-- **OS:** <!-- e.g. Windows 11, Linux (distro), macOS -->
-- **VotV version:** <!-- if relevant -->
-
-## Anything else
-
-<!-- Screenshots, log output, the .glb file (or a link to it), etc. -->
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. Fill in what you can — the more detail, the faster it can be fixed.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you expect, and what actually happened?
+      placeholder: The app crashed when I clicked...
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Numbered steps, starting from a fresh launch if possible.
+      placeholder: |
+        1. 
+        2. 
+        3. 
+    validations:
+      required: true
+  - type: textarea
+    id: diagnose
+    attributes:
+      label: Diagnose report
+      description: |
+        If a model fails to load (shows a `!`), run this in a terminal and paste the output:
+        `votv-model-manager.exe --diagnose "C:\path	o\ModelFolder"`
+        Leave empty if it doesn't apply.
+      render: shell
+  - type: input
+    id: app-version
+    attributes:
+      label: App version
+      description: e.g. 1.2.0, or "built from source (commit abc1234)"
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: e.g. Windows 11, Ubuntu 24.04, macOS 15
+    validations:
+      required: true
+  - type: input
+    id: votv-version
+    attributes:
+      label: VotV version
+      description: Only if relevant to the bug.
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else?
+      description: Screenshots, log output, a link to the .glb file, etc.
