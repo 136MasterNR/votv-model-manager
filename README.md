@@ -12,6 +12,7 @@ Browse your models, check them in a 3D viewer, and import .glb files into the ap
 - **See your models at a glance.** Every model gets an icon, drawn similarly the game draws its own.
 - **Preview in 3D.** Orbit, pan and zoom to check a model before you play.
 - **Convert a any model to the format VotV accepts.** The manager builds the model, textures and collision for you and saves it into your printer folder.
+- **Reset any setting.** A parameter that differs from its default shows a small circular-arrow button at the end of its row; one click puts the default back.
 - **Tweak and see the result right away.** Change scale, collision, health, lamp settings, texture filters and more. The preview updates as you go.
 - **Edit later.** Models you made with the manager can be reopened with all their settings and in blender.
 - **Open in Blender** and send changes back. Save in Blender and the manager picks up the change on its own.
@@ -39,19 +40,24 @@ Browse your models, check them in a 3D viewer, and import .glb files into the ap
 | Rotate | Left mouse button, drag |
 | Move the view | Right mouse button, drag |
 | Zoom | Mouse wheel |
-| More view options | The eye button |
+| More view options | The eye button at the bottom right of the preview (the options open above it): game renderer look / view, static light, **anti-aliasing (M)**, hulls and more |
 
-## Right-click menu on a model
+## Selecting models and the toolbar
 
-| Option | What it does |
-|---|---|
-| **Export** | Saves the model as a `.zip` you can share safely (others cannot use this zip to edit your model) |
-| **Open location** | Opens the model's folder in Explorer |
-| **Rename** | Renames the model and its files |
-| **Regenerate icon** | Makes a fresh icon |
-| **Lock model** | Deletes the saved `.glb` so the model can no longer be edited |
-| **Disable / Enable** | Hides the model from the game without deleting it |
-| **Delete** | Removes the model for good |
+Click a model to select it, **Ctrl + click** to add or remove one, **Shift + click** to select everything from the last
+clicked model to this one (only the models the search leaves visible). The toolbar above the list works on **all** selected
+models; hover a button to see what it does. The preview shows the last clicked one. **Export** (a `.zip` you can share safely: others cannot use it to edit your model) is the button at the top of the preview, not in this toolbar.
+
+| Button | What it does | Selection |
+|---|---|---|
+| **Open location** | Opens the model's folder in Explorer | one model |
+| **Rename** | Renames the model and its files (the name on the tile becomes a text field) | one model |
+| **Regenerate icon** | Makes fresh icons, one after the other | any number |
+| **Lock model** (yellow) | Deletes the saved `.glb` so the models can no longer be edited. Shows a warning and asks for a second click | editable models |
+| **Disable / Enable** | Hides the models from the game without deleting them (it enables when only disabled models are selected) | any number |
+| **Delete** (red) | Removes the models for good; asks for a second click | any number |
+
+Buttons that do not apply to the selection are dimmed. A right click on a tile just selects it (there is no context menu).
 
 ## Good to know
 

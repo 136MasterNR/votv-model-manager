@@ -74,7 +74,12 @@ pub struct Library {
     pub root: PathBuf,
     pub entries: Vec<Entry>,
     pub tiles: Vec<TileRefs>,
+    /// The ACTIVE tile: the one the preview and the editor show.
     pub selected: Option<usize>,
+    /// Every selected tile (Ctrl / Shift + click); contains `selected`. The toolbar acts on all of them.
+    pub selection: std::collections::BTreeSet<usize>,
+    /// Where a Shift + click range starts.
+    pub anchor: Option<usize>,
     pub dirty: bool,     // true: rescan the folder and rebuild the tiles
     pub generation: u64, // bumped on every rescan so stale icon jobs are ignored
     /// Model (folder name) to select after the next rescan, e.g. the one just edited or renamed; otherwise the current
@@ -344,6 +349,8 @@ fn main() {
             entries: vec![],
             tiles: vec![],
             selected: None,
+            selection: Default::default(),
+            anchor: None,
             dirty: true,
             generation: 0,
             select_name: None,
@@ -372,7 +379,7 @@ fn main() {
         .insert_resource(conv_ui::IconEdit::default())
         .insert_resource(textedit::Editing::default())
         .insert_resource(listmenu::Search::default())
-        .insert_resource(listmenu::CtxMenu::default())
+        .insert_resource(listmenu::Toolbar::default())
         .insert_resource(listmenu::SettingsMenu::default())
         .insert_resource(export::ExportJob::default())
         .insert_resource(blender::BlenderJob::default())
@@ -442,7 +449,7 @@ fn main() {
                         .chain(),
                     listmenu::filter_system,
                     listmenu::search_visuals_system,
-                    listmenu::ctx_menu_system,
+                    listmenu::toolbar_system,
                     listmenu::settings_menu_system,
                     conv_ui::props_icon_system,
                     dialog::dialog_system,
@@ -454,6 +461,7 @@ fn main() {
                     conv_ui::sidebar_scrollbar_system,
                     conv_ui::info_scrollbar_system,
                     conv_ui::name_scrollbar_system,
+                    conv_ui::reset_button_system,
                 )
                     .chain(),
             )

@@ -106,6 +106,8 @@ pub struct IconPipe {
     screens: usize, // screenshots still being written
     /// The preview view to render the pending regeneration with (None: the game's icon view).
     regen_view: Option<IconView>,
+    /// Icons still to regenerate (a toolbar batch); the next one starts when the previous one has been picked up.
+    regen_queue: std::collections::VecDeque<(PathBuf, Option<usize>, u64)>,
 }
 
 impl IconPipe {
@@ -120,9 +122,15 @@ impl IconPipe {
     /// An icon regeneration is queued, rendering or being saved.
     pub fn regen_busy(&self) -> bool {
         self.regen_rx.is_some()
+            || !self.regen_queue.is_empty()
             || self.screens > 0
             || self.current.as_ref().map(|c| c.regen).unwrap_or(false)
     }
+}
+
+/// Add a regeneration to the batch queue: they run one after the other (`icon_system` starts the next one).
+pub fn queue_regen(pipe: &mut IconPipe, dir: PathBuf, index: Option<usize>, gen: u64) {
+    pipe.regen_queue.push_back((dir, index, gen));
 }
 
 /// Queue a regeneration of `dir/icon.png` from the model in that folder.
@@ -213,6 +221,15 @@ pub fn icon_system(
 ) {
     if pipe.screens > 0 {
         redraw.write(RequestRedraw); // a saved icon is being captured; the window only redraws on demand
+    }
+    // A toolbar batch: start the next queued regeneration once the previous one has been picked up.
+    if pipe.regen_rx.is_none() {
+        if let Some((dir, index, gen)) = pipe.regen_queue.pop_front() {
+            request_regen(&mut pipe, dir, index, gen, None);
+        }
+    }
+    if !pipe.regen_queue.is_empty() {
+        redraw.write(RequestRedraw);
     }
     // 1. A job is rendering: count frames; when it has rendered, request the screenshot for icon.png and keep the
     //    camera and scene alive until it has been captured (the capture is taken from a camera that renders into the

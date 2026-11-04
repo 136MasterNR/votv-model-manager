@@ -47,12 +47,12 @@ use crate::converter::{load_sidecar, ConvertState};
 use crate::export::{self, HeaderExport};
 use crate::icon_font::{g, icon, IconFont};
 use crate::icons::{start_worker, IconPipe};
-use crate::listmenu::{self, CtxMenu, DropTile, SectionEmpty, SectionHeader};
+use crate::listmenu::{self, DropTile, SectionEmpty, SectionHeader};
 use crate::model::scan_models;
 use crate::model::{sort_entries, SortMode};
 use crate::preview::{self, Orbit, PreviewState};
 use crate::scene::*;
-use crate::{default_root, save_config, Layout, Library, TileRefs};
+use crate::{save_config, Layout, Library, TileRefs};
 
 // ---- palette ---------------------------------------------------------------------------------
 pub(crate) const BG: Color = Color::srgb(0.10, 0.11, 0.13);
@@ -694,6 +694,10 @@ pub fn setup(
     // Search bar under the list (replaces the old drop zone; a .glb can still be dropped anywhere on the list area).
     let search_refs = listmenu::build_search(&mut commands, left, &iconfont);
     commands.insert_resource(search_refs);
+    // The toolbar with the batch actions goes to the TOP of the list column.
+    let (toolbar, toolbar_refs) = listmenu::build_toolbar(&mut commands, &iconfont);
+    commands.entity(left).insert_children(0, &[toolbar]);
+    commands.insert_resource(toolbar_refs);
     // While a file is dragged over the window this covers the whole list area (list, scrollbar and search bar):
     // the whole list is the drop target. It is the last child of `left`, so it draws on top.
     let drop_overlay = child(
@@ -824,13 +828,6 @@ pub fn setup(
             },
         ),
     );
-    let b = child(
-        &mut commands,
-        panel_header,
-        button(Val::Px(24.0), Val::Px(22.0)),
-    );
-    child(&mut commands, b, icon(&iconfont, g::VISIBILITY, 16.0, TEXT));
-    commands.entity(b).observe(on_toggle_options);
     let btn_edit = child(
         &mut commands,
         panel_header,
@@ -954,9 +951,9 @@ pub fn setup(
         (txt("Select a model", 15.0, DIM), Pickable::IGNORE),
     );
 
-    // Options fly-out (hidden until the "=" button is pressed).
-    // Editor only: a floating "preview options" (eye) button at the preview's bottom right. It opens the same fly-out
-    // as the header button of the list screen (conv_ui_system moves the fly-out above this button in the editor).
+    // Options fly-out (hidden until the eye button is pressed).
+    // A floating "preview options" (eye) button at the preview's bottom right, on the list screen and in the editor
+    // (conv_ui_system shows it); the fly-out opens above it.
     let eye_btn = child(
         &mut commands,
         container,
@@ -990,8 +987,8 @@ pub fn setup(
         (
             Node {
                 position_type: PositionType::Absolute,
-                top: Val::Px(8.0),
-                right: Val::Px(8.0),
+                bottom: Val::Px(52.0), // above the eye button
+                right: Val::Px(10.0),
                 width: Val::Px(250.0),
                 flex_direction: FlexDirection::Column,
                 row_gap: Val::Px(4.0),
@@ -1157,8 +1154,6 @@ pub fn setup(
     );
 
     // Right-click menu of the list tiles (drawn above everything, hidden until opened).
-    let ctx_refs = listmenu::build_menu(&mut commands, root, &iconfont);
-    commands.insert_resource(ctx_refs);
     let overlay = crate::textedit::build_overlay(&mut commands, root);
     commands.insert_resource(overlay);
     let dialog_refs = crate::dialog::build_dialog(&mut commands, root, &iconfont);
@@ -1283,7 +1278,7 @@ fn spawn_section(commands: &mut Commands, grid: Entity, rank: u8, sort: SortMode
 }
 
 /// The mouse pointer becomes a hand while it is over `entity` (buttons and fake tiles).
-fn pointer_cursor(commands: &mut Commands, entity: Entity) {
+pub(crate) fn pointer_cursor(commands: &mut Commands, entity: Entity) {
     commands.entity(entity).observe(
         |_: Trigger<Pointer<Over>>,
          mut commands: Commands,
@@ -1372,12 +1367,16 @@ pub fn rescan(
     lib.dirty = false;
     lib.generation += 1;
     // Keep the selection across the rescan: by name (a renamed / edited model is named by `select_name`).
-    let keep = lib.select_name.take().or_else(|| {
-        lib.selected
-            .and_then(|i| lib.entries.get(i))
-            .map(|e| e.name.clone())
-    });
+    let explicit = lib.select_name.take();
+    // A just-edited / renamed / imported model replaces the selection; otherwise every selected model is kept (by name).
+    let keep_all: Vec<String> = if explicit.is_some() {
+        Vec::new()
+    } else {
+        lib.selection.iter().filter_map(|&i| lib.entries.get(i)).map(|e| e.name.clone()).collect()
+    };
+    let keep_active = explicit.or_else(|| lib.selected.and_then(|i| lib.entries.get(i)).map(|e| e.name.clone()));
     lib.selected = None;
+    lib.selection.clear();
 
     for t in lib.tiles.drain(..) {
         commands.entity(t.tile).despawn();
@@ -1388,7 +1387,14 @@ pub fn rescan(
     let mut list = scan_models(&lib.root);
     sort_entries(&mut list, sorting.modes);
     lib.entries = list;
-    lib.selected = keep.and_then(|n| lib.entries.iter().position(|e| e.name == n));
+    lib.selected = keep_active.and_then(|n| lib.entries.iter().position(|e| e.name == n));
+    let mut selection: std::collections::BTreeSet<usize> =
+        keep_all.iter().filter_map(|n| lib.entries.iter().position(|e| &e.name == n)).collect();
+    if let Some(i) = lib.selected {
+        selection.insert(i);
+    }
+    lib.anchor = lib.selected;
+    lib.selection = selection;
 
     let mut tiles = Vec::with_capacity(lib.entries.len());
     // Three permanent sections, in this order: EDITABLE (models with a saved .glb; starts with the drop / pick tile),
@@ -1486,7 +1492,7 @@ pub fn rescan(
                 ),
             );
         }
-        // The name is a box so that "Rename" in the context menu can turn it into a text field (textedit.rs).
+        // The name is a box so that "Rename" in the toolbar can turn it into a text field (textedit.rs).
         let name_box = child(
             &mut commands,
             tile,
@@ -1555,22 +1561,70 @@ pub fn rescan(
             move |t: Trigger<Pointer<Click>>,
                   mut lib: ResMut<Library>,
                   mut layout: ResMut<Layout>,
-                  mut ctx: ResMut<CtxMenu>,
+                  keys: Res<ButtonInput<KeyCode>>,
+                  nodes: Query<&Node>,
+                  time: Res<Time<Real>>,
+                  mut last: Local<(f64, Vec2)>,
                   ed: Res<crate::textedit::Editing>| {
-                match t.event().button {
-                    PointerButton::Primary => {
-                        if ed.active() {
-                            return; // a click while a name is being edited only moves its caret
+                // Bevy sends a Click to EVERY hovered entity under the cursor (the tile and each pickable part of it:
+                // icon, name, ...), and each one bubbles up to this observer. A toggle (Ctrl + click) would run twice
+                // and cancel itself, depending on where on the tile the click lands: handle one click once.
+                let (now, pos) = (time.elapsed_secs_f64(), t.event().pointer_location.position);
+                if *last == (now, pos) {
+                    return;
+                }
+                *last = (now, pos);
+                let secondary = match t.event().button {
+                    PointerButton::Primary => false,
+                    PointerButton::Secondary => true,
+                    _ => return,
+                };
+                if ed.active() {
+                    return; // a click while a name is being edited only moves its caret
+                }
+                let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
+                let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
+                if secondary {
+                    // There is no context menu any more (the toolbar replaces it): a right click selects, like in
+                    // a file explorer, but keeps a selection the tile is already part of.
+                    if lib.selection.contains(&i) {
+                        return;
+                    }
+                    lib.selection.clear();
+                    lib.selection.insert(i);
+                    lib.anchor = Some(i);
+                    lib.selected = Some(i);
+                } else if shift {
+                    // The range from the anchor to this tile, over the tiles that are visible (search filter).
+                    let from = lib.anchor.or(lib.selected).unwrap_or(i);
+                    let (lo, hi) = (from.min(i), from.max(i));
+                    let visible = |j: usize| lib.tiles.get(j).and_then(|r| nodes.get(r.tile).ok()).map_or(true, |n| n.display != Display::None);
+                    let range: Vec<usize> = (lo..=hi).filter(|&j| visible(j)).collect();
+                    if !ctrl {
+                        lib.selection.clear();
+                    }
+                    lib.selection.extend(range);
+                    lib.selection.insert(i);
+                    lib.selected = Some(i);
+                } else if ctrl {
+                    if lib.selection.remove(&i) {
+                        if lib.selected == Some(i) {
+                            lib.selected = lib.selection.iter().next_back().copied(); // the preview moves to another selected tile
                         }
-                        ctx.close();
+                    } else {
+                        lib.selection.insert(i);
                         lib.selected = Some(i);
-                        layout.preview_open = true;
-                        layout.converter = false;
                     }
-                    PointerButton::Secondary => {
-                        ctx.open_for(i, &lib, t.event().pointer_location.position)
-                    }
-                    _ => {}
+                    lib.anchor = Some(i);
+                } else {
+                    lib.selection.clear();
+                    lib.selection.insert(i);
+                    lib.anchor = Some(i);
+                    lib.selected = Some(i);
+                }
+                if lib.selected.is_some() {
+                    layout.preview_open = true;
+                    layout.converter = false;
                 }
             },
         );
@@ -1847,7 +1901,7 @@ pub fn tile_styles(
         return;
     }
     for (t, i, mut b) in &mut q {
-        let c = if lib.selected == Some(t.0) {
+        let c = if lib.selection.contains(&t.0) || lib.selected == Some(t.0) {
             ACCENT
         } else if *i != Interaction::None {
             EDGE_HOVER
@@ -1982,10 +2036,9 @@ pub fn status_text(
         return;
     }
     let busy = pipe.done < pipe.total;
+    // The folder's path is not shown (it often contains the user's name and is long): only whether it is usable.
     let tag = if !lib.root.is_dir() {
-        "  (FOLDER NOT FOUND)"
-    } else if lib.root == default_root() {
-        "  (default)"
+        "FOLDER NOT FOUND   |   "
     } else {
         ""
     };
@@ -1995,8 +2048,7 @@ pub fn status_text(
         conv.summary()
     } else {
         format!(
-            "{}{}   |   {} models{}",
-            lib.root.display(),
+            "{}{} models{}",
             tag,
             lib.entries.len(),
             if busy {

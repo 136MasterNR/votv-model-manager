@@ -1,5 +1,5 @@
-//! Extras of the list screen: the search bar under the list, the "Disabled" section header, and the right-click
-//! context menu of a model tile.
+//! Extras of the list screen: the search bar under the list, the section headers, and the toolbar with the batch
+//! actions on the selected model tiles.
 //!
 //! Search: a small text field (Bevy has no text input widget, so keys are read from `KeyboardInput`). Click it to
 //! type; Escape clears and leaves it, Enter leaves it, a click elsewhere leaves it. Typing is ignored by the preview's
@@ -9,30 +9,31 @@
 //! "drop a .glb / click to browse" tile) and MODELS. A section with nothing to list shows a message row.
 //! Disabled models are not a section: they stay where they belong and are greyed out with a "block" icon.
 //!
-//! Context menu (right click on a tile):
-//!   Export          (editable models only) saves the model folder as a .zip (save dialog), without the .glb and votv_convert.json
-//!   Open location   opens the model folder in the file explorer
-//!   Regenerate icon renders a new icon.png for the model (overwrites it) and refreshes the tile
-//!   Lock model      deletes the .glb saved in the folder (greyed out when there is none); the model leaves EDITABLE
-//!   Disable         renames `<x>.obj` to `<x>.obj.disabled`, so the game skips the model; the tile is greyed out.
-//!                   For a disabled model this entry reads "Enable" and renames the file back.
-//!   Delete          deletes the model folder for good (asks to click a second time)
+//! Selection and toolbar (there is no context menu): click selects a tile, Ctrl + click adds / removes one, Shift + click
+//! selects the range from the last clicked tile (over the tiles the search leaves visible); a right click selects like
+//! a file explorer does. The toolbar at the top of the list acts on the whole selection (icon buttons; the label shows
+//! what the hovered one does):
+//!   Open location   (one model) opens the model folder in the file explorer
+//!   Rename          (one model) turns the name on the tile into a text field
+//!   Regenerate icon renders new icon.png files (one after the other, the game's own view)
+//!   Lock model      deletes the .glb saved in the folders (editable models only); asks for a second click and shows
+//!                   what locking does
+//!   Disable         renames `<x>.obj` to `<x>.obj.disabled`, so the game skips the model; for disabled models the
+//!                   button is "Enable" and renames the file back
+//!   Delete          deletes the model folders for good (asks to click a second time)
 
 use std::path::Path;
 
 use bevy::{
     input::{
         keyboard::{Key, KeyboardInput},
-        mouse::MouseWheel,
         ButtonState,
     },
     prelude::*,
     text::LineBreak,
-    window::PrimaryWindow,
 };
 
 use crate::converter::find_glb;
-use crate::export::{self, ExportJob};
 use crate::icon_font::{g, icon, Glyph, IconFont};
 use crate::icons::{self, IconPipe};
 use crate::textedit::{Editing, Field, Geom};
@@ -364,491 +365,328 @@ pub fn filter_system(
     }
 }
 
-// ---- context menu ------------------------------------------------------------------------------------
+// ---- toolbar (replaces the old right-click menu) -------------------------------------------------------
 
-const MENU_W: f32 = 200.0;
-const MENU_H: f32 = 7.0 * 28.0 + 6.0 * 2.0 + 8.0 + 2.0 + 74.0; // 7 entries; 74 = room for the Lock warning
 const DANGER: Color = Color::srgb(0.95, 0.45, 0.45);
-const WARN: Color = Color::srgb(0.96, 0.80, 0.25); // Lock model (yellow)
+const WARN: Color = Color::srgb(0.96, 0.80, 0.25); // Lock (yellow)
 const DISABLE_COL: Color = Color::srgb(0.98, 0.60, 0.30); // Disable (orange); "Enable" uses EXPORT_COL (green)
-const WARN_DIM: Color = Color::srgb(0.50, 0.43, 0.20); // Lock model when there is no .glb to delete
-const LOCK_WARNING: &str = "Locking deletes the saved .glb. The model stays in the game but can no longer be edited here. Click again to lock.";
+const OFF_COL: Color = Color::srgb(0.30, 0.32, 0.36); // a button that does not apply to the selection
+const LOCK_WARNING: &str = "Locking deletes the saved .glb of the selected models. They stay in the game but can no longer be edited (they leave EDITABLE). Click Lock again to confirm.";
 
-#[derive(Resource, Default)]
-pub struct CtxMenu {
-    pub open: bool,
-    fresh: bool, // just opened: place it
-    pub target: usize,
-    pos: Vec2,
-    generation: u64,
-    has_glb: bool,
-    disabled: bool,
-    confirm: bool,      // "Delete" was clicked once
-    confirm_lock: bool, // "Lock model" was clicked once (the warning is showing)
+/// One button of the toolbar above the list. They act on the whole selection (Ctrl + click adds or removes a tile,
+/// Shift + click selects a range); Open location and Rename need exactly one model (Export is the button above the preview).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ToolAction {
+    Open,
+    Rename,
+    Regen,
+    Lock,
+    Toggle,
+    Delete,
 }
 
-impl CtxMenu {
-    pub fn open_for(&mut self, i: usize, lib: &Library, pos: Vec2) {
-        let Some(e) = lib.entries.get(i) else { return };
-        *self = CtxMenu {
-            open: true,
-            fresh: true,
-            target: i,
-            pos,
-            generation: lib.generation,
-            has_glb: find_glb(&e.dir).is_some(),
-            disabled: e.disabled,
-            confirm: false,
-            confirm_lock: false,
-        };
-    }
-    pub fn close(&mut self) {
-        if self.open {
-            self.open = false;
-            self.confirm = false;
-            self.confirm_lock = false;
-        }
-    }
+const TOOLS: [(ToolAction, Glyph); 6] = [
+    (ToolAction::Open, g::FOLDER_OPEN),
+    (ToolAction::Rename, g::EDIT),
+    (ToolAction::Regen, g::REFRESH),
+    (ToolAction::Lock, g::LOCK),
+    (ToolAction::Toggle, g::BLOCK),
+    (ToolAction::Delete, g::DELETE),
+];
+
+#[derive(Resource, Default)]
+pub struct Toolbar {
+    hover: Option<ToolAction>,
+    /// Lock or Delete was clicked once and waits for the second click (any other click or a new selection cancels it).
+    confirm: Option<ToolAction>,
+    /// The generation and selection the counts below (and `confirm`) belong to.
+    key: (u64, Vec<usize>),
+    n: usize,
+    /// How many of the selected models have a saved .glb (can be edited or locked).
+    editable: usize,
+    enabled: usize,
+    disabled: usize,
 }
 
 #[derive(Resource)]
-pub struct CtxRefs {
-    menu: Entity,
-    open: Entity,
-    export: Entity,
-    rename: Entity,
-    regen: Entity,
-    lock: Entity,
-    toggle: Entity,
-    perm: Entity,
-    lock_text: Entity,
-    lock_warn: Entity, // the warning box under Lock model
-    toggle_text: Entity,
-    perm_text: Entity,
-    // icons that change with the state
-    lock_icon: Entity,
-    toggle_icon: Entity,
-    perm_icon: Entity,
+pub struct ToolbarRefs {
+    label: Entity,
+    warn: Entity,
+    buttons: Vec<(ToolAction, Entity)>, // the button and (as its only child) its icon
 }
 
 pub(crate) fn primary(t: &Trigger<Pointer<Click>>) -> bool {
     t.event().button == PointerButton::Primary
 }
 
-/// Build the (hidden) menu under `root` so it draws above everything else.
-pub fn build_menu(commands: &mut Commands, root: Entity, font: &IconFont) -> CtxRefs {
-    let menu = child(
+/// Spawns the toolbar (not yet attached to a parent: `ui::setup` puts it at the top of the list column).
+pub fn build_toolbar(commands: &mut Commands, font: &IconFont) -> (Entity, ToolbarRefs) {
+    let root = commands
+        .spawn((
+            Node { flex_direction: FlexDirection::Column, flex_shrink: 0.0, border: UiRect::bottom(Val::Px(2.0)), ..default() },
+            BackgroundColor(TILE),
+            BorderColor(EDGE),
+        ))
+        .id();
+    let row = child(
         commands,
         root,
+        Node { height: Val::Px(38.0), align_items: AlignItems::Center, column_gap: Val::Px(6.0), padding: UiRect::horizontal(Val::Px(12.0)), ..default() },
+    );
+    let label = child(
+        commands,
+        row,
         (
-            Interaction::default(),
-            Node {
-                position_type: PositionType::Absolute,
-                left: Val::Px(0.0),
-                top: Val::Px(0.0),
-                width: Val::Px(MENU_W),
-                flex_direction: FlexDirection::Column,
-                row_gap: Val::Px(2.0),
-                padding: UiRect::all(Val::Px(4.0)),
-                border: UiRect::all(Val::Px(1.0)),
-                display: Display::None,
-                ..default()
-            },
-            BackgroundColor(Color::srgb(0.12, 0.13, 0.16)),
-            BorderColor(EDGE_HOVER),
-            BorderRadius::all(Val::Px(6.0)),
-            GlobalZIndex(150),
+            txt("", 12.0, DIM),
+            TextLayout { linebreak: LineBreak::NoWrap, ..default() },
+            Node { flex_grow: 1.0, flex_basis: Val::Px(0.0), min_width: Val::Px(0.0), overflow: Overflow::clip(), ..default() },
+            Pickable::IGNORE,
         ),
     );
-    // One row: icon column, label.
-    let item = |commands: &mut Commands, glyph: Glyph, label: &str| -> (Entity, Entity, Entity) {
+    let mut buttons = Vec::new();
+    for (action, glyph) in TOOLS {
         let b = child(
             commands,
-            menu,
+            row,
             (
                 Button,
-                Node {
-                    height: Val::Px(28.0),
-                    align_items: AlignItems::Center,
-                    column_gap: Val::Px(8.0),
-                    padding: UiRect::horizontal(Val::Px(8.0)),
-                    ..default()
-                },
+                Node { width: Val::Px(34.0), height: Val::Px(28.0), flex_shrink: 0.0, justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..default() },
                 BackgroundColor(BTN),
                 BorderRadius::all(Val::Px(4.0)),
             ),
         );
-        let i = child(
-            commands,
-            b,
-            (
-                icon(font, glyph, 18.0, TEXT),
-                Node {
-                    width: Val::Px(20.0),
-                    ..default()
-                },
-                Pickable::IGNORE,
-            ),
-        );
-        let t = child(
-            commands,
-            b,
-            (
-                txt(label, 13.0, TEXT),
-                TextLayout {
-                    linebreak: LineBreak::NoWrap,
-                    ..default()
-                },
-                Pickable::IGNORE,
-            ),
-        );
-        (b, t, i)
-    };
-    let (export, export_text, export_icon) = item(commands, g::FILE_UPLOAD, "Export");
-    commands.entity(export_text).insert(TextColor(EXPORT_COL));
-    commands.entity(export_icon).insert(TextColor(EXPORT_COL));
-    let (open, _, _) = item(commands, g::FOLDER_OPEN, "Open location");
-    let (rename, _, _) = item(commands, g::EDIT, "Rename");
-    let (regen, _, _) = item(commands, g::REFRESH, "Regenerate icon");
-    let (lock, lock_text, lock_icon) = item(commands, g::LOCK, "Lock model");
-    // Warning shown after the first click on Lock model (hidden until then).
-    let lock_warn = child(
-        commands,
-        menu,
-        (
-            Node {
-                display: Display::None,
-                padding: UiRect::axes(Val::Px(8.0), Val::Px(4.0)),
-                ..default()
+        child(commands, b, (icon(font, glyph, 19.0, TEXT), Pickable::IGNORE));
+        commands.entity(b).observe(move |_: Trigger<Pointer<Over>>, mut bar: ResMut<Toolbar>| bar.hover = Some(action));
+        commands.entity(b).observe(move |_: Trigger<Pointer<Out>>, mut bar: ResMut<Toolbar>| {
+            if bar.hover == Some(action) {
+                bar.hover = None;
+            }
+        });
+        commands.entity(b).observe(
+            move |t: Trigger<Pointer<Click>>,
+                  mut bar: ResMut<Toolbar>,
+                  mut lib: ResMut<Library>,
+                  mut layout: ResMut<Layout>,
+                  mut pipe: ResMut<IconPipe>,
+                  mut ed: ResMut<Editing>,
+                  time: Res<Time<Real>>,
+                  mut last: Local<(f64, Vec2)>| {
+                // One click can reach this observer more than once (Bevy sends a Click to every hovered entity and each
+                // bubbles up): Lock and Delete ask for a second click, so a repeat of the same click must not count.
+                let (now, pos) = (time.elapsed_secs_f64(), t.event().pointer_location.position);
+                if *last == (now, pos) {
+                    return;
+                }
+                *last = (now, pos);
+                if primary(&t) {
+                    perform(action, &mut bar, &mut lib, &mut layout, &mut pipe, &mut ed, time.elapsed_secs_f64());
+                }
             },
+        );
+        crate::ui::pointer_cursor(commands, b);
+        buttons.push((action, b));
+    }
+    // The warning under the toolbar while a Lock waits for its second click.
+    let warn = child(
+        commands,
+        root,
+        (
+            Node { display: Display::None, padding: UiRect::axes(Val::Px(12.0), Val::Px(6.0)), ..default() },
+            BackgroundColor(Color::srgb(0.20, 0.17, 0.08)),
             Pickable::IGNORE,
         ),
     );
-    child(
-        commands,
-        lock_warn,
-        (txt(LOCK_WARNING, 12.0, WARN), Pickable::IGNORE),
-    );
-    let (toggle, toggle_text, toggle_icon) = item(commands, g::BLOCK, "Disable");
-    let (perm, perm_text, perm_icon) = item(commands, g::DELETE, "Delete");
+    child(commands, warn, (txt(LOCK_WARNING, 12.0, WARN), Pickable::IGNORE));
+    (root, ToolbarRefs { label, warn, buttons })
+}
 
-    commands.entity(open).observe(
-        |t: Trigger<Pointer<Click>>, mut ctx: ResMut<CtxMenu>, lib: Res<Library>| {
-            if !primary(&t) {
-                return;
+/// What a toolbar button does to the selection. Lock and Delete ask for a second click first.
+#[allow(clippy::too_many_arguments)]
+fn perform(action: ToolAction, bar: &mut Toolbar, lib: &mut Library, layout: &mut Layout, pipe: &mut IconPipe, ed: &mut Editing, now: f64) {
+    if bar.confirm.is_some() && bar.confirm != Some(action) {
+        bar.confirm = None;
+    }
+    let sel: Vec<usize> = lib.selection.iter().copied().filter(|&i| i < lib.entries.len()).collect();
+    if sel.is_empty() {
+        return;
+    }
+    let single = (sel.len() == 1).then(|| sel[0]);
+    match action {
+        ToolAction::Open => {
+            if let Some(i) = single {
+                open_location(&lib.entries[i].dir);
             }
-            if let Some(e) = lib.entries.get(ctx.target) {
-                open_location(&e.dir);
-            }
-            ctx.close();
-        },
-    );
-    commands.entity(export).observe(
-        |t: Trigger<Pointer<Click>>,
-         mut ctx: ResMut<CtxMenu>,
-         lib: Res<Library>,
-         mut job: ResMut<ExportJob>| {
-            if !primary(&t) {
-                return;
-            }
-            if !ctx.has_glb {
-                return; // hidden for models that cannot be edited
-            }
-            if let Some(e) = lib.entries.get(ctx.target) {
-                export::start(&mut job, e.dir.clone());
-            }
-            ctx.close();
-        },
-    );
-    // Rename: the name on the tile becomes a text field with its text selected.
-    commands.entity(rename).observe(
-        |t: Trigger<Pointer<Click>>,
-         mut ctx: ResMut<CtxMenu>,
-         lib: Res<Library>,
-         mut ed: ResMut<Editing>,
-         time: Res<Time<Real>>| {
-            if !primary(&t) {
-                return;
-            }
-            if let (Some(e), Some(tile)) = (lib.entries.get(ctx.target), lib.tiles.get(ctx.target))
-            {
-                ed.start(
-                    Field::Tile(ctx.target),
-                    &e.name,
-                    Geom::tile(tile.name_text, tile.name_box),
-                    true,
-                    time.elapsed_secs_f64(),
-                );
-            }
-            ctx.close();
-        },
-    );
-    commands.entity(regen).observe(
-        |t: Trigger<Pointer<Click>>,
-         mut ctx: ResMut<CtxMenu>,
-         lib: Res<Library>,
-         mut pipe: ResMut<IconPipe>| {
-            if !primary(&t) {
-                return;
-            }
-            if let Some(e) = lib.entries.get(ctx.target) {
-                icons::request_regen(
-                    &mut pipe,
-                    e.dir.clone(),
-                    Some(ctx.target),
-                    lib.generation,
-                    None,
-                ); // the list's icon: the game's own view
-            }
-            ctx.close();
-        },
-    );
-    commands.entity(lock).observe(
-        |t: Trigger<Pointer<Click>>,
-         mut ctx: ResMut<CtxMenu>,
-         mut lib: ResMut<Library>,
-         mut layout: ResMut<Layout>| {
-            if !primary(&t) || !ctx.has_glb {
-                return; // greyed out
-            }
-            if !ctx.confirm_lock {
-                ctx.confirm_lock = true; // shows the warning; a second click locks
-                ctx.confirm = false;
-                return;
-            }
-            if let Some(e) = lib.entries.get(ctx.target) {
-                match remove_glbs(&e.dir) {
-                    Ok(_) => {
-                        layout.notice = None;
-                        lib.dirty = true; // rescan: the model leaves EDITABLE and loses its Edit button
-                    }
-                    Err(er) => layout.notice = Some(format!("Could not delete the .glb: {er}")),
+        }
+        ToolAction::Rename => {
+            if let (Some(i), true) = (single, !ed.active()) {
+                if let Some(tile) = lib.tiles.get(i) {
+                    ed.start(Field::Tile(i), &lib.entries[i].name, Geom::tile(tile.name_text, tile.name_box), true, now);
                 }
             }
-            ctx.close();
-        },
-    );
-    commands.entity(toggle).observe(
-        |t: Trigger<Pointer<Click>>,
-         mut ctx: ResMut<CtxMenu>,
-         mut lib: ResMut<Library>,
-         mut layout: ResMut<Layout>| {
-            if !primary(&t) {
+        }
+        ToolAction::Regen => {
+            for &i in &sel {
+                icons::queue_regen(pipe, lib.entries[i].dir.clone(), Some(i), lib.generation); // the list's icon: the game's own view
+            }
+            layout.notice = Some(if sel.len() == 1 { "Regenerating the icon...".to_string() } else { format!("Regenerating {} icons...", sel.len()) });
+        }
+        ToolAction::Lock => {
+            let targets: Vec<usize> = sel.iter().copied().filter(|&i| find_glb(&lib.entries[i].dir).is_some()).collect();
+            if targets.is_empty() {
                 return;
             }
-            if let Some(e) = lib.entries.get(ctx.target) {
-                match set_enabled(&e.dir, e.disabled) {
-                    Ok(()) => {
-                        layout.notice = None;
-                        lib.dirty = true; // rescan: the model moves to / from the Disabled section
-                    }
-                    Err(er) => layout.notice = Some(er),
+            if bar.confirm != Some(ToolAction::Lock) {
+                bar.confirm = Some(ToolAction::Lock); // shows the warning; a second click locks
+                return;
+            }
+            bar.confirm = None;
+            let mut errors = Vec::new();
+            for i in targets {
+                if let Err(e) = remove_glbs(&lib.entries[i].dir) {
+                    errors.push(format!("{}: {e}", lib.entries[i].name));
                 }
             }
-            ctx.close();
-        },
-    );
-    commands.entity(perm).observe(
-        |t: Trigger<Pointer<Click>>,
-         mut ctx: ResMut<CtxMenu>,
-         mut lib: ResMut<Library>,
-         mut layout: ResMut<Layout>| {
-            if !primary(&t) {
+            layout.notice = (!errors.is_empty()).then(|| format!("Could not delete the .glb of {}", errors.join("; ")));
+            lib.dirty = true; // rescan: the models leave EDITABLE and lose their Edit button
+        }
+        ToolAction::Toggle => {
+            // Any enabled model selected: disable those; otherwise enable the disabled ones.
+            let disable = sel.iter().any(|&i| !lib.entries[i].disabled);
+            let mut errors = Vec::new();
+            for &i in &sel {
+                if lib.entries[i].disabled == disable {
+                    continue;
+                }
+                if let Err(e) = set_enabled(&lib.entries[i].dir, !disable) {
+                    errors.push(e);
+                }
+            }
+            layout.notice = (!errors.is_empty()).then(|| errors.join("; "));
+            lib.dirty = true;
+        }
+        ToolAction::Delete => {
+            if bar.confirm != Some(ToolAction::Delete) {
+                bar.confirm = Some(ToolAction::Delete); // asks for a second click
                 return;
             }
-            if !ctx.confirm {
-                ctx.confirm = true; // asks for a second click
-                ctx.confirm_lock = false;
-                return;
-            }
-            if let Some(e) = lib.entries.get(ctx.target) {
+            bar.confirm = None;
+            let mut errors = Vec::new();
+            for &i in &sel {
+                let e = &lib.entries[i];
                 // Only ever delete a model folder directly inside the library folder.
                 if e.dir.parent() == Some(lib.root.as_path()) && e.dir != lib.root {
-                    match std::fs::remove_dir_all(&e.dir) {
-                        Ok(()) => {
-                            layout.notice = None;
-                            lib.dirty = true;
-                        }
-                        Err(er) => {
-                            layout.notice = Some(format!("Could not delete the folder: {er}"))
-                        }
+                    if let Err(er) = std::fs::remove_dir_all(&e.dir) {
+                        errors.push(format!("{}: {er}", e.name));
                     }
                 }
             }
-            ctx.close();
-        },
-    );
-
-    CtxRefs {
-        menu,
-        open,
-        export,
-        rename,
-        regen,
-        lock,
-        toggle,
-        perm,
-        lock_text,
-        lock_warn,
-        toggle_text,
-        perm_text,
-        lock_icon,
-        toggle_icon,
-        perm_icon,
+            layout.notice = (!errors.is_empty()).then(|| format!("Could not delete the folder of {}", errors.join("; ")));
+            lib.selection.clear();
+            lib.selected = None;
+            lib.dirty = true;
+        }
     }
 }
 
-/// Opens / places / closes the menu and keeps its entries up to date.
+/// Keeps the buttons, the label and the warning in step with the selection (and cancels a pending confirmation when the
+/// selection changes).
 #[allow(clippy::too_many_arguments)]
-pub fn ctx_menu_system(
-    mut ctx: ResMut<CtxMenu>,
+pub fn toolbar_system(
     lib: Res<Library>,
-    refs: Res<CtxRefs>,
-    windows: Query<&Window, With<PrimaryWindow>>,
-    mouse: Res<ButtonInput<MouseButton>>,
-    keys: Res<ButtonInput<KeyCode>>,
-    mut wheel: EventReader<MouseWheel>,
-    ints: Query<&Interaction>,
-    mut nodes: Query<&mut Node>,
+    mut bar: ResMut<Toolbar>,
+    refs: Res<ToolbarRefs>,
+    font: Res<IconFont>,
+    ed: Res<Editing>,
     mut texts: Query<&mut Text>,
     mut colors: Query<&mut TextColor>,
-    font: Res<IconFont>,
+    mut nodes: Query<&mut Node>,
+    children: Query<&Children>,
 ) {
-    let scrolled = wheel.read().count() > 0;
-    if ctx.open {
-        let over = [
-            refs.menu,
-            refs.open,
-            refs.export,
-            refs.rename,
-            refs.regen,
-            refs.lock,
-            refs.toggle,
-            refs.perm,
-        ]
-        .iter()
-        .any(|e| {
-            ints.get(*e)
-                .map(|i| *i != Interaction::None)
-                .unwrap_or(false)
-        });
-        let pressed =
-            mouse.just_pressed(MouseButton::Left) || mouse.just_pressed(MouseButton::Right);
-        if keys.just_pressed(KeyCode::Escape)
-            || scrolled
-            || (pressed && !over)
-            || ctx.generation != lib.generation
-        {
-            ctx.close();
-        }
+    let key = (lib.generation, lib.selection.iter().copied().collect::<Vec<_>>());
+    if bar.key != key {
+        bar.key = key;
+        bar.confirm = None;
+        let sel: Vec<&crate::model::Entry> = lib.selection.iter().filter_map(|&i| lib.entries.get(i)).collect();
+        bar.n = sel.len();
+        bar.editable = sel.iter().filter(|e| find_glb(&e.dir).is_some()).count();
+        bar.disabled = sel.iter().filter(|e| e.disabled).count();
+        bar.enabled = sel.len() - bar.disabled;
     }
-    let set_display = |nodes: &mut Query<&mut Node>, e: Entity, d: Display| {
-        if let Ok(mut n) = nodes.get_mut(e) {
-            if n.display != d {
-                n.display = d;
+    let n = bar.n;
+    let available = |a: ToolAction| match a {
+        ToolAction::Open | ToolAction::Rename => n == 1 && !ed.active(),
+        ToolAction::Regen | ToolAction::Delete => n >= 1,
+        ToolAction::Lock => bar.editable >= 1,
+        ToolAction::Toggle => n >= 1,
+    };
+    let enabling = bar.enabled == 0 && bar.disabled > 0;
+    for &(action, button) in &refs.buttons {
+        let Ok(kids) = children.get(button) else { continue };
+        let Some(&ic) = kids.first() else { continue };
+        let natural = match action {
+            ToolAction::Lock => WARN,
+            ToolAction::Toggle if enabling => EXPORT_COL,
+            ToolAction::Toggle => DISABLE_COL,
+            ToolAction::Delete => DANGER,
+            _ => TEXT,
+        };
+        let want = if available(action) { natural } else { OFF_COL };
+        if let Ok(mut c) = colors.get_mut(ic) {
+            if c.0 != want {
+                c.0 = want;
             }
         }
-    };
-    if !ctx.open {
-        set_display(&mut nodes, refs.menu, Display::None);
-        return;
-    }
-    if ctx.fresh {
-        ctx.fresh = false;
-        let (ww, wh) = windows
-            .single()
-            .map(|w| (w.width(), w.height()))
-            .unwrap_or((1200.0, 760.0));
-        let (x, y) = (
-            ctx.pos.x.min(ww - MENU_W - 4.0).max(0.0),
-            ctx.pos.y.min(wh - MENU_H - 4.0).max(0.0),
-        );
-        if let Ok(mut n) = nodes.get_mut(refs.menu) {
-            n.left = Val::Px(x);
-            n.top = Val::Px(y);
-        }
-    }
-    set_display(&mut nodes, refs.menu, Display::Flex);
-    // Export is only offered for editable models (a saved .glb in the folder), like the Edit button.
-    set_display(
-        &mut nodes,
-        refs.export,
-        if ctx.has_glb {
-            Display::Flex
-        } else {
-            Display::None
-        },
-    );
-
-    let mut set = |e: Entity, s: &str, c: Color| {
-        if let Ok(mut t) = texts.get_mut(e) {
-            if t.0 != s {
-                t.0 = s.to_string();
+        if action == ToolAction::Toggle {
+            let glyph = font.text(if enabling { g::CHECK_CIRCLE } else { g::BLOCK });
+            if let Ok(mut t) = texts.get_mut(ic) {
+                if t.0 != glyph {
+                    t.0 = glyph;
+                }
             }
         }
-        if let Ok(mut col) = colors.get_mut(e) {
-            if col.0 != c {
-                col.0 = c;
-            }
+    }
+    // The label: what the hovered button does, a pending confirmation, or the selection.
+    let plural = |one: &str, many: &str| if n > 1 { format!("{many} ({n})") } else { one.to_string() };
+    let (text, color) = match (bar.confirm, bar.hover) {
+        (Some(ToolAction::Delete), _) => (format!("Click Delete again to remove {}", if n == 1 { "this model".to_string() } else { format!("{n} models") }), DANGER),
+        (Some(ToolAction::Lock), _) => ("Click Lock again to lock".to_string(), WARN),
+        (_, Some(a)) => (
+            match a {
+                ToolAction::Open => "Open location".to_string(),
+                ToolAction::Rename => "Rename".to_string(),
+                ToolAction::Regen => plural("Regenerate icon", "Regenerate icons"),
+                ToolAction::Lock => plural("Lock model", "Lock models"),
+                ToolAction::Toggle if enabling => plural("Enable", "Enable"),
+                ToolAction::Toggle => plural("Disable", "Disable"),
+                ToolAction::Delete => plural("Delete", "Delete"),
+            },
+            TEXT,
+        ),
+        _ => (
+            match (n, lib.selected.and_then(|i| lib.entries.get(i))) {
+                (0, _) => "Select a model (Ctrl or Shift for several)".to_string(),
+                (1, Some(e)) => e.name.clone(),
+                _ => format!("{n} models selected"),
+            },
+            DIM,
+        ),
+    };
+    if let Ok(mut t) = texts.get_mut(refs.label) {
+        if t.0 != text {
+            t.0 = text;
         }
-    };
-    let lock_col = if ctx.has_glb { WARN } else { WARN_DIM };
-    set(
-        refs.lock_text,
-        if ctx.confirm_lock {
-            "Confirm lock"
-        } else {
-            "Lock model"
-        },
-        lock_col,
-    );
-    set_display(
-        &mut nodes,
-        refs.lock_warn,
-        if ctx.confirm_lock {
-            Display::Flex
-        } else {
-            Display::None
-        },
-    );
-    let toggle_col = if ctx.disabled {
-        EXPORT_COL
-    } else {
-        DISABLE_COL
-    };
-    set(
-        refs.toggle_text,
-        if ctx.disabled { "Enable" } else { "Disable" },
-        toggle_col,
-    );
-    set(
-        refs.perm_text,
-        if ctx.confirm {
-            "Click to confirm"
-        } else {
-            "Delete"
-        },
-        DANGER,
-    );
-    set(refs.lock_icon, &font.text(g::LOCK), lock_col);
-    set(
-        refs.toggle_icon,
-        &font.text(if ctx.disabled {
-            g::CHECK_CIRCLE
-        } else {
-            g::BLOCK
-        }),
-        toggle_col,
-    );
-    set(
-        refs.perm_icon,
-        &font.text(if ctx.confirm {
-            g::DELETE_FOREVER
-        } else {
-            g::DELETE
-        }),
-        DANGER,
-    );
+    }
+    if let Ok(mut c) = colors.get_mut(refs.label) {
+        if c.0 != color {
+            c.0 = color;
+        }
+    }
+    if let Ok(mut node) = nodes.get_mut(refs.warn) {
+        let want = if bar.confirm == Some(ToolAction::Lock) { Display::Flex } else { Display::None };
+        if node.display != want {
+            node.display = want;
+        }
+    }
 }
 
 // ---- app settings menu (title bar drop-down) ----------------------------------------------------------

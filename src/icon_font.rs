@@ -43,9 +43,9 @@ pub mod g {
     pub const LOCK: Glyph = gl('\u{e897}'); // lock
     pub const BLOCK: Glyph = gl('\u{e14b}'); // block
     pub const DELETE: Glyph = gl('\u{e872}'); // delete
-    pub const DELETE_FOREVER: Glyph = gl('\u{e92b}'); // delete_forever
     pub const FILE_UPLOAD: Glyph = gl('\u{e2c6}'); // file_upload (arrow out of a tray): export
     pub const LAUNCH: Glyph = gl('\u{e895}'); // launch (arrow out of a box): opens another program
+    pub const RESTART_ALT: Glyph = gl('\u{e8ba}'); // restart_alt (circular arrow): reset to the default
     pub const EDIT: Glyph = gl('\u{e3c9}'); // edit
     pub const SEARCH: Glyph = gl('\u{e8b6}'); // search
     pub const ADD: Glyph = gl('\u{e145}'); // add

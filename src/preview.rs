@@ -671,7 +671,7 @@ pub fn thumb_rig_system(
     opts: Res<Opts>,
     ps: Res<PreviewState>,
     mut orbit: ResMut<Orbit>,
-    mut last: Local<(u64, bool, bool, bool, bool)>, // scene_gen, thumb_lights, game_view, z_up, static_light
+    mut last: Local<(u64, bool, bool, bool, bool, bool)>, // scene_gen, thumb_lights, game_view, z_up, static_light, aa
     mut lights: Query<(&ThumbLight, &mut Transform, &mut DirectionalLight), Without<StudioLight>>,
     mut studio: Query<&mut Transform, (With<StudioLight>, Without<ThumbLight>)>,
     mut cam: Query<
@@ -691,6 +691,7 @@ pub fn thumb_rig_system(
         opts.game_view,
         opts.z_up,
         opts.static_light,
+        opts.aa,
     );
     let prev = *last;
     let settings_changed = prev != now;
@@ -701,7 +702,9 @@ pub fn thumb_rig_system(
     if settings_changed {
         if let Ok((mut proj, mut camera, mut ambient, mut tone, mut msaa)) = cam.single_mut() {
             let look = opts.thumb_lights;
-            *msaa = if look { Msaa::Off } else { Msaa::default() }; // the icon render has no anti-aliasing
+            // Anti-aliasing is its own option (M), independent of the icon look: the preview is smoothed, the generated
+            // icons (icons.rs, Msaa::Off) are not.
+            *msaa = if opts.aa { Msaa::Sample4 } else { Msaa::Off };
             ambient.brightness = if look { 0.0 } else { STUDIO_AMBIENT };
             *tone = if look {
                 Tonemapping::None

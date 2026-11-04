@@ -114,7 +114,7 @@ pub struct ConvertState {
     pub saved_any: bool,
 }
 
-fn base_options() -> Options {
+pub(crate) fn base_options() -> Options {
     Options {
         overwrite: OverwritePolicy::Replace,
         // The sidebar owns the properties.cfg values, so always write them (INTEGRATION.md).

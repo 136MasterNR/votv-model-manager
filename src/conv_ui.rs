@@ -541,6 +541,112 @@ pub struct RowRefs {
     /// A slider's track and its thumb (`slider_visuals_system`).
     pub track: Option<Entity>,
     pub thumb: Option<Entity>,
+    /// The "reset to default" button of a parameter row (shown only while the value differs from the default).
+    pub reset: Option<Entity>,
+}
+
+/// The small "reset to default" button of a parameter row: a circular-arrow icon button. It is hidden while the value
+/// is the default (`reset_button_system`; hidden keeps its room, so nothing jumps while a slider moves). A click puts
+/// the default value back and must not reach the row (a toggle would flip, a dropdown would open).
+fn spawn_reset(
+    commands: &mut Commands,
+    parent: Entity,
+    font: &IconFont,
+    i: usize,
+    push_right: bool,
+) -> Entity {
+    let b = child(
+        commands,
+        parent,
+        (
+            Button,
+            ItemButton,
+            Node {
+                width: Val::Px(22.0),
+                height: Val::Px(22.0),
+                flex_shrink: 0.0,
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
+                margin: if push_right {
+                    UiRect::left(Val::Auto)
+                } else {
+                    UiRect::ZERO
+                },
+                ..default()
+            },
+            BackgroundColor(ITEM),
+            BorderRadius::all(Val::Px(3.0)),
+            Visibility::Hidden,
+        ),
+    );
+    child(
+        commands,
+        b,
+        (icon(font, g::RESTART_ALT, 16.0, ACCENT), Pickable::IGNORE),
+    );
+    commands.entity(b).observe(
+        move |mut t: Trigger<Pointer<Click>>,
+              rows: Res<ParamRows>,
+              mut st: ResMut<ConvertState>| {
+            t.propagate(false);
+            if t.event().button == PointerButton::Primary {
+                reset_row(&rows.0[i], &mut st);
+            }
+        },
+    );
+    commands
+        .entity(b)
+        .observe(|mut t: Trigger<Pointer<Pressed>>| t.propagate(false));
+    b
+}
+
+/// Puts one parameter back to the converter's default (`Options::default()` as the editor starts from it).
+fn reset_row(row: &Row, st: &mut ConvertState) {
+    let Row::Param(def) = row else { return };
+    let d = crate::converter::base_options();
+    match &def.kind {
+        ParamKind::Toggle { get, set } => set(&mut st.opts, get(&d)),
+        ParamKind::Slider { get, set, .. } => set(&mut st.opts, get(&d)),
+        ParamKind::Choice { get, set, .. } => set(&mut st.opts, get(&d)),
+    }
+    st.changed(0.0);
+}
+
+fn is_default(def: &ParamDef, cur: &Options, d: &Options) -> bool {
+    match &def.kind {
+        ParamKind::Toggle { get, .. } => get(cur) == get(d),
+        ParamKind::Slider { get, .. } => (get(cur) - get(d)).abs() < 1e-6,
+        ParamKind::Choice { get, .. } => get(cur) == get(d),
+    }
+}
+
+/// Shows the reset button of exactly the rows whose value is not the default.
+pub fn reset_button_system(
+    st: Res<ConvertState>,
+    rows: Res<ParamRows>,
+    refs: Res<ConvUiRefs>,
+    mut vis: Query<&mut Visibility>,
+    mut defaults: Local<Option<Options>>,
+) {
+    if !st.is_changed() && !refs.is_changed() {
+        return;
+    }
+    let d = defaults.get_or_insert_with(crate::converter::base_options);
+    for (r, row) in refs.rows.iter().zip(rows.0.iter()) {
+        let (Some(e), Row::Param(def)) = (r.reset, row) else {
+            continue;
+        };
+        let want = if is_default(def, &st.opts, d) {
+            Visibility::Hidden
+        } else {
+            Visibility::Inherited
+        };
+        if let Ok(mut v) = vis.get_mut(e) {
+            if *v != want {
+                *v = want;
+            }
+        }
+    }
 }
 
 /// Marks the graying overlay of a row, so the mouse wheel over it still scrolls the properties list (`ui::wheel_system`).
@@ -1634,6 +1740,7 @@ pub fn build(
                     overlay: None,
                     track: None,
                     thumb: None,
+                    reset: None,
                 });
             }
             Row::Param(def) => {
@@ -1687,6 +1794,7 @@ pub fn build(
                             node,
                             (line(def.label, 13.0, TEXT), Pickable::IGNORE),
                         );
+                        let reset = spawn_reset(commands, node, font, i, true);
                         commands.entity(node).observe(
                             move |_: Trigger<Pointer<Click>>,
                                   rows: Res<ParamRows>,
@@ -1714,6 +1822,7 @@ pub fn build(
                             overlay,
                             track: None,
                             thumb: None,
+                            reset: Some(reset),
                         });
                     }
                     ParamKind::Choice { labels, .. } => {
@@ -1774,6 +1883,7 @@ pub fn build(
                                 Pickable::IGNORE,
                             ),
                         );
+                        let reset = spawn_reset(commands, right, font, i, false);
                         let value =
                             child(commands, right, (line("", 13.0, ACCENT), Pickable::IGNORE));
                         let chev = child(
@@ -1860,6 +1970,7 @@ pub fn build(
                             overlay,
                             track: None,
                             thumb: None,
+                            reset: Some(reset),
                         });
                     }
                     ParamKind::Slider { .. } => {
@@ -1899,9 +2010,22 @@ pub fn build(
                         );
                         child(commands, top, (line(def.label, 13.0, TEXT), pass()));
                         // The value is a field: click it to type an exact number (see textedit.rs).
-                        let vbox = child(
+                        let right_group = child(
                             commands,
                             top,
+                            (
+                                Node {
+                                    align_items: AlignItems::Center,
+                                    column_gap: Val::Px(6.0),
+                                    ..default()
+                                },
+                                pass(),
+                            ),
+                        );
+                        let reset = spawn_reset(commands, right_group, font, i, false);
+                        let vbox = child(
+                            commands,
+                            right_group,
                             (
                                 Interaction::default(),
                                 Node {
@@ -2069,6 +2193,7 @@ pub fn build(
                             overlay,
                             track: Some(track),
                             thumb: Some(thumb),
+                            reset: Some(reset),
                         });
                     }
                 }
@@ -2355,7 +2480,12 @@ pub fn conv_ui_system(
     show(&mut nodes, refs.sidebar, flex(conv));
     show(&mut nodes, refs.log_panel, flex(conv && lp.open));
     show(&mut nodes, refs.logs_btn, flex(conv));
-    show(&mut nodes, refs.eye_btn, flex(conv));
+    // The floating preview-options button: in the editor and under the list screen's preview.
+    show(
+        &mut nodes,
+        refs.eye_btn,
+        flex(conv || (!layout.converter && layout.preview_open)),
+    );
     show(&mut nodes, refs.props_splitter, flex(conv));
     if let Ok(mut n) = nodes.get_mut(refs.sidebar) {
         let w = Val::Px(pw.0);
@@ -2363,20 +2493,8 @@ pub fn conv_ui_system(
             n.width = w;
         }
     }
-    // The preview options fly-out sits at the top right of the preview on the list screen, and above the eye button
-    // (bottom right) in the editor.
-    if let Ok(mut n) = nodes.get_mut(ui_refs.options) {
-        let (top, bottom, right) = if layout.converter {
-            (Val::Auto, Val::Px(52.0), Val::Px(10.0))
-        } else {
-            (Val::Px(8.0), Val::Auto, Val::Px(8.0))
-        };
-        if n.top != top || n.bottom != bottom || n.right != right {
-            n.top = top;
-            n.bottom = bottom;
-            n.right = right;
-        }
-    }
+    // The preview options fly-out sits above the eye button (bottom right of the preview), on both screens; it is
+    // placed there when built, so nothing needs to move it.
     if let Ok(mut n) = nodes.get_mut(refs.close_btn) {
         // The X is a 32 px square; on the converter screen the button sizes itself to the arrow and "Return" (a fixed
         // width used to cut the text off) with some padding.
@@ -3508,5 +3626,46 @@ mod tests {
             }
             assert!(o.validate().is_ok(), "{} left invalid options", def.label);
         }
+    }
+
+    #[test]
+    fn reset_button_logic_matches_the_defaults() {
+        let d = crate::converter::base_options();
+        for row in rows() {
+            let Row::Param(def) = row else { continue };
+            // A fresh options set equals the defaults on every row: no reset button anywhere.
+            assert!(is_default(&def, &d, &d), "{}", def.label);
+            // Changing the value makes the row differ, and writing the default back makes it equal again.
+            let mut o = base_opts_for_test();
+            match &def.kind {
+                ParamKind::Toggle { get, set } => {
+                    set(&mut o, !get(&d));
+                    assert!(!is_default(&def, &o, &d), "{}", def.label);
+                    set(&mut o, get(&d));
+                }
+                ParamKind::Slider { get, set, min, max, .. } => {
+                    // The bound farthest from the default (always a value the row accepts).
+                    let far = if (get(&d) - min).abs() > (max - get(&d)).abs() { *min } else { *max };
+                    if (far - get(&d)).abs() > 1e-6 {
+                        set(&mut o, far);
+                        assert!(!is_default(&def, &o, &d), "{}", def.label);
+                    }
+                    set(&mut o, get(&d));
+                }
+                ParamKind::Choice { labels, get, set } => {
+                    if labels.len() < 2 {
+                        continue;
+                    }
+                    set(&mut o, (get(&d) + 1) % labels.len());
+                    assert!(!is_default(&def, &o, &d), "{}", def.label);
+                    set(&mut o, get(&d));
+                }
+            }
+            assert!(is_default(&def, &o, &d), "{}", def.label);
+        }
+    }
+
+    fn base_opts_for_test() -> Options {
+        crate::converter::base_options()
     }
 }

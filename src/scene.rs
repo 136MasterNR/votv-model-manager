@@ -31,6 +31,7 @@ pub struct Opts {
     pub thumb_lights: bool, // the game's icon look: its two lights, no ambient light, no tone curve, grey background
     pub game_view: bool, // the game's icon camera: FOV 10 degrees, 12R away, from the front right above
     pub static_light: bool, // true: the preview lights stay where they are; false: they turn with the camera
+    pub aa: bool, // anti-aliasing of the preview (4x MSAA); the generated icons never use it
     pub show_hulls: bool,
     pub alpha: usize,
     pub drop_duplicates: bool, // converter rule: drop the untextured copy of duplicated faces
@@ -47,6 +48,7 @@ impl Default for Opts {
             thumb_lights: true, // the preview shows the game's icon look by default (lights, no tone curve, pbr + diffuse only)
             game_view: false, // the game's icon camera (FOV 10, 12R) is opt-in (G): the studio camera is the default
             static_light: false,
+            aa: true,
             show_hulls: false,
             alpha: 0,
             drop_duplicates: true,
@@ -72,11 +74,12 @@ pub enum OptKey {
     ThumbLights,
     GameView,
     StaticLight,
+    Aa,
     Hulls,
     Debug,
     Duplicates,
 }
-pub const ALL_KEYS: [OptKey; 12] = [
+pub const ALL_KEYS: [OptKey; 13] = [
     OptKey::Tangents,
     OptKey::FlipV,
     OptKey::FlipWinding,
@@ -86,11 +89,12 @@ pub const ALL_KEYS: [OptKey; 12] = [
     OptKey::ThumbLights,
     OptKey::GameView,
     OptKey::StaticLight,
+    OptKey::Aa,
     OptKey::Hulls,
     OptKey::Debug,
     OptKey::Duplicates,
 ];
-pub const KEY_BINDINGS: [(KeyCode, OptKey); 12] = [
+pub const KEY_BINDINGS: [(KeyCode, OptKey); 13] = [
     (KeyCode::KeyT, OptKey::Tangents),
     (KeyCode::KeyU, OptKey::FlipV),
     (KeyCode::KeyF, OptKey::FlipWinding),
@@ -100,6 +104,7 @@ pub const KEY_BINDINGS: [(KeyCode, OptKey); 12] = [
     (KeyCode::KeyL, OptKey::ThumbLights),
     (KeyCode::KeyG, OptKey::GameView),
     (KeyCode::KeyS, OptKey::StaticLight),
+    (KeyCode::KeyM, OptKey::Aa),
     (KeyCode::KeyH, OptKey::Hulls),
     (KeyCode::KeyC, OptKey::Debug),
     (KeyCode::KeyD, OptKey::Duplicates),
@@ -116,6 +121,7 @@ pub fn toggle(k: OptKey, o: &mut Opts) {
         OptKey::ThumbLights => o.thumb_lights = !o.thumb_lights,
         OptKey::GameView => o.game_view = !o.game_view,
         OptKey::StaticLight => o.static_light = !o.static_light,
+        OptKey::Aa => o.aa = !o.aa,
         OptKey::Hulls => o.show_hulls = !o.show_hulls,
         OptKey::Debug => o.debug = (o.debug + 1) % 3,
         OptKey::Duplicates => o.drop_duplicates = !o.drop_duplicates,
@@ -141,6 +147,7 @@ pub fn opt_text(k: OptKey, o: &Opts) -> String {
         OptKey::ThumbLights => format!("Game renderer look (L): {}", on(o.thumb_lights)),
         OptKey::GameView => format!("Game renderer view (G): {}", on(o.game_view)),
         OptKey::StaticLight => format!("Static light (S): {}", on(o.static_light)),
+        OptKey::Aa => format!("Anti-aliasing (M): {}", on(o.aa)),
         OptKey::Hulls => format!("Show hulls (H): {}", on(o.show_hulls)),
         OptKey::Duplicates => format!("Drop duplicate faces (D): {}", on(o.drop_duplicates)),
         OptKey::Debug => format!(
