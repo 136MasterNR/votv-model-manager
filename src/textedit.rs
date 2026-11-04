@@ -64,7 +64,7 @@ impl Geom {
             size: 16.0,
             x0: 8.0,
             // padding 8 + pencil 14 + gap 6 (the name's scroll area ends before the pencil)
-            right: 8.0 + 14.0 + 6.0,
+            right: 8.0 + 26.0 + 6.0,
             top: 4.0,
             h: 19.0,
         }
@@ -698,7 +698,7 @@ pub fn edit_visuals_system(
     if let Some((pf, pg)) = *last {
         if Some(pf) != ed.field {
             let (text, border) = match pf {
-                Field::Rename => (model_name(&st), EDGE),
+                Field::Rename => (model_name(&st), Color::NONE), // the name is plain text again
                 Field::Slider(i) => {
                     let s = match rows.0.get(i) {
                         Some(Row::Param(def)) => match &def.kind {

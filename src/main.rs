@@ -460,7 +460,7 @@ fn main() {
                     conv_ui::edit_button_system,
                     conv_ui::sidebar_scrollbar_system,
                     conv_ui::info_scrollbar_system,
-                    conv_ui::name_scrollbar_system,
+                    conv_ui::name_marquee_system,
                     conv_ui::reset_button_system,
                 )
                     .chain(),

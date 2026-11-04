@@ -42,6 +42,12 @@ Browse your models, check them in a 3D viewer, and import .glb files into the ap
 | Zoom | Mouse wheel |
 | More view options | The eye button at the bottom right of the preview (the options open above it): game renderer look / view, static light, **anti-aliasing (M)**, hulls and more |
 
+## The model name in the editor
+
+The model name at the top of the properties panel is plain text. The **pencil button** next to it starts the rename: the name
+becomes a text field with all of its text selected (Enter confirms, Escape cancels). A name that does not fit scrolls slowly
+and smoothly to its end while the pointer is over it and glides back when the pointer leaves; that never takes a click.
+
 ## Selecting models and the toolbar
 
 Click a model to select it, **Ctrl + click** to add or remove one, **Shift + click** to select everything from the last

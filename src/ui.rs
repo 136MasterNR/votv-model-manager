@@ -1967,11 +1967,6 @@ pub fn wheel_system(
                     cref.scroll // (a grayed-out row's overlay blocks the pointer, so it forwards the wheel too)
                 } else if *entity == cref.info_sb_track || *entity == cref.info_sb_thumb {
                     cref.info_scroll
-                } else if *entity == cref.name_box
-                    || *entity == cref.name_sb_track
-                    || *entity == cref.name_sb_thumb
-                {
-                    cref.name_scroll // a long model name scrolls sideways
                 } else {
                     *entity
                 };

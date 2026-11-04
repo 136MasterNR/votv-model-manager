@@ -21,7 +21,7 @@ use bevy::{
     render::render_resource::{Extent3d, TextureDimension, TextureFormat},
     text::{JustifyText, LineBreak},
     ui::OverflowAxis,
-    window::{FileDragAndDrop, PrimaryWindow, SystemCursorIcon},
+    window::{FileDragAndDrop, PrimaryWindow, RequestRedraw, SystemCursorIcon},
 };
 use votv_convert::model_core::PropValue;
 use votv_convert::{CollisionQuality, Options, Severity};
@@ -33,7 +33,7 @@ use crate::preview::{PreviewCamera, StudioLight, ThumbLight};
 use crate::scene::Opts;
 use crate::textedit::{field_drag, field_out, field_over, press, shift_down, Editing, Field, Geom};
 use crate::ui::{
-    button, child, pass, scroll_metrics, set_cursor, thumb_height, txt, ItemButton, UiRefs, ACCENT,
+    button, child, pass, pointer_cursor, scroll_metrics, set_cursor, thumb_height, txt, ItemButton, UiRefs, ACCENT,
     BAR, BTN, DIM, EDGE, EDGE_HOVER, EXPORT_COL, ICON_BG, ITEM, PANEL, TEXT,
 };
 use crate::{Layout, Library};
@@ -754,10 +754,8 @@ pub struct ConvUiRefs {
     pub icon_overlay: Entity, // the "click to choose / drop a PNG" cover shown on hover
     pub icon_overlay_text: Entity,
     pub name_text: Entity,
-    pub name_box: Entity, // the clickable box around the name (click = rename)
-    pub name_scroll: Entity, // the name's scrolling area (a long name scrolls sideways)
-    pub name_sb_track: Entity,
-    pub name_sb_thumb: Entity,
+    pub name_box: Entity, // the box around the name (it gets a field look while the name is edited)
+    pub name_scroll: Entity, // the name's scrolling area (a long name scrolls on hover: name_marquee_system)
     pub info_text: Entity,
     pub info_scroll: Entity, // the info box's scrolling area
     pub info_sb_track: Entity,
@@ -1293,7 +1291,10 @@ pub fn build(
             ..default()
         },
     );
-    // The model name is a field: click it to rename the model (see textedit.rs).
+    // The model name is plain text, it does not look like a field. The pencil button next to it starts the rename and
+    // turns the box into a text field (textedit.rs; `name_marquee_system` paints the field look while it is edited). A
+    // name wider than the box scrolls slowly sideways while the pointer is over it (`name_marquee_system`), which never
+    // takes a click: the text ignores the pointer.
     let name_box = child(
         commands,
         right_col,
@@ -1303,18 +1304,18 @@ pub fn build(
                 align_items: AlignItems::Center,
                 column_gap: Val::Px(6.0),
                 padding: UiRect::axes(Val::Px(8.0), Val::Px(4.0)),
-                border: UiRect::all(Val::Px(1.0)),
+                border: UiRect::all(Val::Px(1.0)), // (transparent until the name is edited; keeps the field geometry)
                 overflow: Overflow::clip(),
                 ..default()
             },
-            BackgroundColor(Color::srgb(0.10, 0.11, 0.13)),
-            BorderColor(EDGE),
+            BackgroundColor(Color::NONE),
+            BorderColor(Color::NONE),
             BorderRadius::all(Val::Px(4.0)),
         ),
     );
-    // The name is ONE line. A name wider than the box scrolls sideways (wheel, or the slim scrollbar under the text); the
-    // scroll area ends before the pencil, so the text can never reach it. While the name is edited textedit.rs scrolls
-    // the text itself, so the scroll position is held at 0 and the scrollbar is hidden.
+    // A COLUMN: the scroll area below is stretched to the column's width whatever the text does. (As a row it was only as
+    // wide as the text minus the negative margin textedit.rs uses to scroll the edited name, so the visible area shrank
+    // while the caret moved right and the text vanished.)
     let name_col = child(
         commands,
         name_box,
@@ -1331,7 +1332,7 @@ pub fn build(
         name_col,
         (
             Node {
-                flex_direction: FlexDirection::Row,
+                width: Val::Percent(100.0),
                 overflow: Overflow {
                     x: OverflowAxis::Scroll,
                     y: OverflowAxis::Clip,
@@ -1339,7 +1340,7 @@ pub fn build(
                 ..default()
             },
             ScrollPosition::default(),
-            Pickable::IGNORE, // the box around it takes the clicks (rename); the wheel is routed to this area by wheel_system
+            Pickable::IGNORE,
         ),
     );
     let name_text = child(
@@ -1352,88 +1353,44 @@ pub fn build(
                 ..default()
             },
             Node {
-                flex_shrink: 0.0, // keeps its full width, so the area has something to scroll
+                flex_shrink: 0.0, // keeps its full width, so there is something to scroll
                 ..default()
             },
             Pickable::IGNORE,
         ),
     );
-    let name_sb_track = child(
-        commands,
-        name_col,
-        (
-            Node {
-                height: Val::Px(5.0),
-                margin: UiRect::top(Val::Px(2.0)),
-                flex_shrink: 0.0,
-                ..default()
-            },
-            BackgroundColor(Color::NONE), // dark only while the name overflows (name_scrollbar_system)
-            BorderRadius::all(Val::Px(2.5)),
-        ),
-    );
-    let name_sb_thumb = child(
-        commands,
-        name_sb_track,
-        (
-            Button,
-            Node {
-                position_type: PositionType::Absolute,
-                left: Val::Px(0.0),
-                width: Val::Px(20.0),
-                top: Val::Px(0.0),
-                bottom: Val::Px(0.0),
-                display: Display::None,
-                ..default()
-            },
-            BackgroundColor(BTN),
-            BorderRadius::all(Val::Px(2.5)),
-        ),
-    );
-    commands.entity(name_sb_thumb).observe(name_thumb_drag);
-    // A press on the scrollbar must not start the rename (presses bubble up to the box).
-    commands
-        .entity(name_sb_thumb)
-        .observe(|mut t: Trigger<Pointer<Pressed>>| t.propagate(false));
-    commands
-        .entity(name_sb_track)
-        .observe(|mut t: Trigger<Pointer<Pressed>>| t.propagate(false));
-    child(
-        commands,
-        name_box,
-        (
-            icon(font, g::EDIT, 14.0, DIM),
-            Node {
-                flex_shrink: 0.0,
-                align_self: AlignSelf::FlexStart, // level with the text line, not centred against text + scrollbar
-                margin: UiRect::top(Val::Px(3.0)),
-                ..default()
-            },
-            Pickable::IGNORE,
-        ),
-    );
-    commands.entity(name_box).observe(field_over);
-    commands.entity(name_box).observe(field_out);
-    commands.entity(name_box).observe(field_drag);
-    commands.entity(name_box).observe(
-        move |t: Trigger<Pointer<Pressed>>,
+    let pencil = child(commands, name_box, button(Val::Px(26.0), Val::Px(24.0)));
+    child(commands, pencil, (icon(font, g::EDIT, 15.0, TEXT), Pickable::IGNORE));
+    pointer_cursor(commands, pencil);
+    commands.entity(pencil).observe(
+        move |t: Trigger<Pointer<Click>>,
               st: Res<ConvertState>,
-              boxes: Query<(&GlobalTransform, &ComputedNode)>,
-              keys: Res<ButtonInput<KeyCode>>,
               time: Res<Time<Real>>,
               mut ed: ResMut<Editing>| {
             if t.event().button != PointerButton::Primary || st.input.is_none() {
                 return;
             }
-            let now = time.elapsed_secs_f64();
             if ed.widget != Some(name_box) {
                 ed.start(
                     Field::Rename,
                     &model_name(&st),
                     Geom::rename(name_text, name_box),
-                    false,
-                    now,
+                    true, // the whole name is selected, like the tile's Rename
+                    time.elapsed_secs_f64(),
                 );
+            }
+        },
+    );
+    // While the name is edited, drags select text and presses move the caret (nothing happens when it is not edited).
+    commands.entity(name_box).observe(field_drag);
+    commands.entity(name_box).observe(
+        move |t: Trigger<Pointer<Pressed>>,
+              boxes: Query<(&GlobalTransform, &ComputedNode)>,
+              keys: Res<ButtonInput<KeyCode>>,
+              time: Res<Time<Real>>,
+              mut ed: ResMut<Editing>| {
+            if t.event().button != PointerButton::Primary || ed.widget != Some(name_box) {
+                return;
             }
             press(
                 &mut ed,
@@ -1441,7 +1398,7 @@ pub fn build(
                 name_box,
                 t.event().pointer_location.position.x,
                 shift_down(&keys),
-                now,
+                time.elapsed_secs_f64(),
             );
         },
     );
@@ -2391,8 +2348,6 @@ pub fn build(
         name_text,
         name_box,
         name_scroll,
-        name_sb_track,
-        name_sb_thumb,
         info_text,
         info_scroll,
         info_sb_track,
@@ -3355,120 +3310,66 @@ pub fn sidebar_scrollbar_system(
     }
 }
 
-/// (visible, content, track length) along x, in logical px: the horizontal twin of `scroll_metrics`.
-fn scroll_metrics_x(area: &ComputedNode, track: &ComputedNode) -> (f32, f32, f32) {
-    let isf = area.inverse_scale_factor;
-    (
-        area.size.x * isf,
-        area.content_size.x * isf,
-        track.size.x * track.inverse_scale_factor,
-    )
-}
+/// Scrolling speed of a long model name while the pointer is over it (logical px per second), the speed of the way back,
+/// and the pause before it starts.
+const MARQUEE_SPEED: f32 = 38.0;
+const MARQUEE_BACK: f32 = 150.0;
+const MARQUEE_DELAY: f32 = 0.45;
 
-/// The horizontal twin of `place_thumb`. Returns whether the content overflows (the thumb is shown).
-fn place_thumb_x(
-    sp: &ScrollPosition,
-    area: &ComputedNode,
-    track: &ComputedNode,
-    n: &mut Node,
-) -> bool {
-    let (visible, content, track_w) = scroll_metrics_x(area, track);
-    let max = (content - visible).max(0.0);
-    if max < 1.0 || track_w < 30.0 {
-        if n.display != Display::None {
-            n.display = Display::None;
-        }
-        return false;
-    }
-    let w = thumb_height(visible, content, track_w); // (a length along the track, whichever way it runs)
-    let left = (sp.offset_x.clamp(0.0, max) / max) * (track_w - w);
-    if n.display != Display::Flex {
-        n.display = Display::Flex;
-    }
-    if n.width != Val::Px(w) {
-        n.width = Val::Px(w);
-    }
-    if n.left != Val::Px(left) {
-        n.left = Val::Px(left);
-    }
-    true
-}
-
-/// Scrolls `area` sideways by a thumb drag of `delta_x` pixels along `track`.
-fn drag_thumb_x(
-    delta_x: f32,
-    area: Entity,
-    track: Entity,
-    nodes: &Query<&ComputedNode>,
-    sps: &mut Query<&mut ScrollPosition>,
-) {
-    let (Ok(g), Ok(tr)) = (nodes.get(area), nodes.get(track)) else {
-        return;
-    };
-    let (visible, content, track_w) = scroll_metrics_x(g, tr);
-    let max = (content - visible).max(0.0);
-    let travel = (track_w - thumb_height(visible, content, track_w)).max(1.0);
-    if let Ok(mut sp) = sps.get_mut(area) {
-        sp.offset_x = (sp.offset_x + delta_x * max / travel).clamp(0.0, max);
-    }
-}
-
-/// The scrollbar of the model name (a long name scrolls sideways; the bar sits under the text and is only drawn while
-/// the name overflows). While the name is edited it is hidden and the scroll position held at 0, so the caret overlay of
-/// the rename field stays where textedit.rs puts it.
-pub fn name_scrollbar_system(
+/// The model name: while the pointer is over a name that does not fit, it scrolls slowly and smoothly to its end (after a
+/// short pause) and glides back when the pointer leaves. It is only a scroll position: the text ignores the pointer, so
+/// the pencil (rename) and everything else behave the same. While the name is edited it stays at 0 (textedit.rs scrolls the
+/// text itself) and the box gets its field look (dark background; textedit.rs paints the border).
+pub fn name_marquee_system(
+    time: Res<Time<Real>>,
     refs: Res<ConvUiRefs>,
     ed: Res<Editing>,
-    mut scrolls: Query<(&mut ScrollPosition, &ComputedNode)>,
-    computed: Query<&ComputedNode>,
-    mut nodes: Query<&mut Node>,
+    hovers: Query<&Interaction>,
+    scrolls: Query<&ComputedNode>,
+    mut positions: Query<&mut ScrollPosition>,
     mut bgs: Query<&mut BackgroundColor>,
+    mut state: Local<(f32, f32)>, // (offset, seconds the pointer has been over the name)
+    mut redraw: EventWriter<RequestRedraw>,
 ) {
     let editing = ed.is(Field::Rename);
-    let Ok((mut sp, g)) = scrolls.get_mut(refs.name_scroll) else {
-        return;
-    };
-    if editing && sp.offset_x != 0.0 {
-        sp.offset_x = 0.0;
-    }
-    let Ok(tr) = computed.get(refs.name_sb_track) else {
-        return;
-    };
-    let mut overflowing = false;
-    if let Ok(mut n) = nodes.get_mut(refs.name_sb_thumb) {
-        if editing {
-            if n.display != Display::None {
-                n.display = Display::None;
-            }
-        } else {
-            overflowing = place_thumb_x(&sp, g, tr, &mut n);
+    if let Ok(mut bg) = bgs.get_mut(refs.name_box) {
+        let want = if editing { Color::srgb(0.10, 0.11, 0.13) } else { Color::NONE };
+        if bg.0 != want {
+            bg.0 = want;
         }
     }
-    if let Ok(mut c) = bgs.get_mut(refs.name_sb_track) {
-        let want = if overflowing {
-            Color::srgb(0.07, 0.08, 0.10)
-        } else {
-            Color::NONE
-        };
-        if c.0 != want {
-            c.0 = want;
+    let (Ok(view), Ok(mut sp)) = (scrolls.get(refs.name_scroll), positions.get_mut(refs.name_scroll)) else {
+        return;
+    };
+    let max = ((view.content_size.x - view.size.x) * view.inverse_scale_factor).max(0.0);
+    let hovered = !editing && max > 1.0 && hovers.get(refs.name_box).is_ok_and(|i| *i != Interaction::None);
+    let dt = time.delta_secs().min(0.05); // the window redraws on demand: never jump after an idle moment
+    let (mut offset, mut held) = *state;
+    let mut animating = false;
+    if editing {
+        offset = 0.0;
+        held = 0.0;
+    } else if hovered {
+        held += dt;
+        if held > MARQUEE_DELAY && offset < max {
+            offset = (offset + MARQUEE_SPEED * dt).min(max);
+        }
+        animating = held <= MARQUEE_DELAY || offset < max;
+    } else {
+        held = 0.0;
+        if offset > 0.0 {
+            offset = (offset - MARQUEE_BACK * dt).max(0.0);
+            animating = offset > 0.0;
         }
     }
-}
-
-fn name_thumb_drag(
-    t: Trigger<Pointer<Drag>>,
-    refs: Res<ConvUiRefs>,
-    nodes: Query<&ComputedNode>,
-    mut sps: Query<&mut ScrollPosition>,
-) {
-    drag_thumb_x(
-        t.event().delta.x,
-        refs.name_scroll,
-        refs.name_sb_track,
-        &nodes,
-        &mut sps,
-    );
+    offset = offset.min(max);
+    *state = (offset, held);
+    if sp.offset_x != offset {
+        sp.offset_x = offset;
+    }
+    if animating {
+        redraw.write(RequestRedraw); // keep the animation running while the window waits for input
+    }
 }
 
 /// The same for the scrollbar of the info box under the model name.
