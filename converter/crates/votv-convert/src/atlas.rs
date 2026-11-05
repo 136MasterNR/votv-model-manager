@@ -31,18 +31,14 @@ pub struct MatKey {
 }
 
 pub fn material_key(mat: Option<&Material>, textures: &[Option<Tex>]) -> SwatchKey {
-    let Some(m) = mat else {
-        return SwatchKey::Default;
-    };
+    let Some(m) = mat else { return SwatchKey::Default };
     let h = |i: Option<usize>| i.and_then(|i| textures[i].as_ref()).map(|t| t.hash);
     SwatchKey::Material(MatKey {
         name: m.name.clone(),
         base: h(m.base_tex),
         factor: m.base_factor,
         emissive: h(m.emissive_tex),
-        emissive_factor: m
-            .emissive_factor
-            .map(|f| [f[0].to_bits(), f[1].to_bits(), f[2].to_bits()]),
+        emissive_factor: m.emissive_factor.map(|f| [f[0].to_bits(), f[1].to_bits(), f[2].to_bits()]),
         normal: h(m.normal_tex),
         mr: h(m.mr_tex),
         rough: m.roughness.map(f64::to_bits),
@@ -101,23 +97,13 @@ pub fn thumbnail_size(w: u32, h: u32, max: u32) -> (u32, u32) {
         x = pick(y * aspect, &|n| (aspect - n / y).abs());
     } else {
         let xx = x;
-        y = pick(xx / aspect, &|n| {
-            if n == 0.0 {
-                0.0
-            } else {
-                (aspect - xx / n).abs()
-            }
-        });
+        y = pick(xx / aspect, &|n| if n == 0.0 { 0.0 } else { (aspect - xx / n).abs() });
     }
     (x as u32, y as u32)
 }
 
 /// (swatch, has_real_uv). `apply_factor` multiplies a base texture by `baseColorFactor`.
-pub fn material_swatch(
-    mat: Option<&Material>,
-    textures: &[Option<Tex>],
-    apply_factor: bool,
-) -> (RgbaImage, bool) {
+pub fn material_swatch(mat: Option<&Material>, textures: &[Option<Tex>], apply_factor: bool) -> (RgbaImage, bool) {
     if let Some(m) = mat {
         let keeps_alpha = matches!(m.alpha_mode.as_deref(), Some("MASK") | Some("BLEND"));
         if let Some(t) = tex(textures, m.base_tex) {
@@ -181,10 +167,7 @@ pub fn pack(swatches: &[RgbaImage]) -> (RgbaImage, Vec<Placement>) {
     order.sort_by(|&a, &b| swatches[b].height().cmp(&swatches[a].height()));
     let padded: Vec<RgbaImage> = order.iter().map(|&i| pad_edge(&swatches[i], PAD)).collect();
 
-    let total_area: u64 = padded
-        .iter()
-        .map(|p| p.width() as u64 * p.height() as u64)
-        .sum();
+    let total_area: u64 = padded.iter().map(|p| p.width() as u64 * p.height() as u64).sum();
     let max_w = padded.iter().map(|p| p.width()).max().unwrap_or(1);
     let atlas_w = max_w.max(((total_area as f64).sqrt() as u32).max(1));
 
@@ -223,10 +206,7 @@ pub fn pack(swatches: &[RgbaImage]) -> (RgbaImage, Vec<Placement>) {
 // ---------- extra maps --------------------------------------------------------------------
 
 pub fn has_emission(m: &Material) -> bool {
-    m.emissive_tex.is_some()
-        || m.emissive_factor
-            .map(|f| f.iter().any(|c| *c > 0.0))
-            .unwrap_or(false)
+    m.emissive_tex.is_some() || m.emissive_factor.map(|f| f.iter().any(|c| *c >= 0.02)).unwrap_or(false)
 }
 pub fn has_normal(m: &Material) -> bool {
     m.normal_tex.is_some()
@@ -237,7 +217,18 @@ pub fn has_roughness(m: &Material) -> bool {
 
 fn emissive_tile(m: &Material, tx: &[Option<Tex>]) -> Option<RgbaImage> {
     if let Some(t) = tex(tx, m.emissive_tex) {
-        return Some(t.img.clone());
+        let mut img = t.img.clone();
+        // glTF: emission = texture x factor (an absent factor next to a texture is taken as 1)
+        if let Some(f) = m.emissive_factor {
+            if f.iter().any(|c| (*c - 1.0).abs() > 1e-3) {
+                for p in img.pixels_mut() {
+                    for k in 0..3 {
+                        p[k] = round_py(p[k] as f64 * f[k].clamp(0.0, 1.0)) as u8;
+                    }
+                }
+            }
+        }
+        return Some(img);
     }
     let f = m.emissive_factor?;
     if f.iter().any(|c| *c > 0.0) {
@@ -319,18 +310,9 @@ pub fn build_map(
             MapKind::Pbr => pbr_tile(m, textures),
         };
         let Some(tile) = tile else { continue };
-        let tile = if tile.dimensions() != (p.w, p.h) {
-            resize_rgba(&tile, p.w, p.h)
-        } else {
-            tile
-        };
+        let tile = if tile.dimensions() != (p.w, p.h) { resize_rgba(&tile, p.w, p.h) } else { tile };
         let padded = pad_edge(&tile, PAD);
-        imageops::replace(
-            &mut atlas,
-            &padded,
-            p.x as i64 - PAD as i64,
-            p.y_top as i64 - PAD as i64,
-        );
+        imageops::replace(&mut atlas, &padded, p.x as i64 - PAD as i64, p.y_top as i64 - PAD as i64);
     }
     Some(atlas)
 }

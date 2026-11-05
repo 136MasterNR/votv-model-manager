@@ -6,8 +6,8 @@
 use std::collections::{HashMap, HashSet};
 
 use parry3d::math::Vector;
-use parry3d::transformation::try_convex_hull;
 use parry3d::transformation::vhacd::{VHACDParameters, VHACD};
+use parry3d::transformation::try_convex_hull;
 
 use crate::geom::*;
 use crate::options::{CollisionQuality, ConvertOptions};
@@ -30,21 +30,14 @@ fn from_vec(v: Vector) -> V3 {
 fn signed_volume(verts: &[V3], faces: &[[u32; 3]]) -> f64 {
     faces
         .iter()
-        .map(|f| {
-            dot(
-                verts[f[0] as usize],
-                cross(verts[f[1] as usize], verts[f[2] as usize]),
-            )
-        })
+        .map(|f| dot(verts[f[0] as usize], cross(verts[f[1] as usize], verts[f[2] as usize])))
         .sum::<f64>()
         / 6.0
 }
 
 fn hull_of(points: &[V3]) -> Option<Mesh> {
     let pts: Vec<Vector> = points.iter().map(|p| to_vec(*p)).collect();
-    let (v, f) = std::panic::catch_unwind(|| try_convex_hull(&pts))
-        .ok()?
-        .ok()?;
+    let (v, f) = std::panic::catch_unwind(|| try_convex_hull(&pts)).ok()?.ok()?;
     if f.is_empty() {
         return None;
     }
@@ -77,19 +70,13 @@ pub fn simplify_hull(mut mesh: Mesh, max_faces: usize) -> Mesh {
                 for &fi in &incident[v] {
                     ring.extend(mesh.faces[fi].iter().copied().filter(|&x| x as usize != v));
                 }
-                let c = ring
-                    .iter()
-                    .fold([0.0; 3], |a, &r| add(a, mesh.verts[r as usize]));
+                let c = ring.iter().fold([0.0; 3], |a, &r| add(a, mesh.verts[r as usize]));
                 let c = mul(c, 1.0 / ring.len().max(1) as f64);
                 let vol: f64 = incident[v]
                     .iter()
                     .map(|&fi| {
                         let f = mesh.faces[fi];
-                        let o: Vec<V3> = f
-                            .iter()
-                            .filter(|&&x| x as usize != v)
-                            .map(|&x| mesh.verts[x as usize])
-                            .collect();
+                        let o: Vec<V3> = f.iter().filter(|&&x| x as usize != v).map(|&x| mesh.verts[x as usize]).collect();
                         let pv = mesh.verts[v];
                         dot(sub(o[0], pv), cross(sub(o[1], pv), sub(c, pv))).abs() / 6.0
                     })
@@ -114,10 +101,7 @@ pub fn simplify_hull(mut mesh: Mesh, max_faces: usize) -> Mesh {
                 blocked.extend(mesh.faces[fi].iter().map(|&x| x as usize));
             }
         }
-        let keep: Vec<V3> = (0..n)
-            .filter(|v| !remove.contains(v))
-            .map(|v| mesh.verts[v])
-            .collect();
+        let keep: Vec<V3> = (0..n).filter(|v| !remove.contains(v)).map(|v| mesh.verts[v]).collect();
         match hull_of(&keep) {
             Some(h) => mesh = h,
             None => break,
@@ -147,11 +131,7 @@ pub fn generate_raw(parts: &[Part], opts: &ConvertOptions) -> Result<RawHulls, S
     for p in parts {
         let base = pts.len() as u32;
         pts.extend(p.pos.iter().map(|v| to_vec(*v)));
-        idx.extend(
-            p.tris
-                .iter()
-                .map(|t| [t[0] + base, t[1] + base, t[2] + base]),
-        );
+        idx.extend(p.tris.iter().map(|t| [t[0] + base, t[1] + base, t[2] + base]));
     }
     let all: Vec<V3> = pts.iter().map(|v| from_vec(*v)).collect();
 
@@ -174,37 +154,23 @@ pub fn generate_raw(parts: &[Part], opts: &ConvertOptions) -> Result<RawHulls, S
                     .filter_map(|(v, f)| {
                         let verts: Vec<V3> = v.into_iter().map(from_vec).collect();
                         // re-hull for clean, outward, deduplicated output
-                        hull_of(&verts).or_else(|| {
-                            if f.is_empty() {
-                                None
-                            } else {
-                                Some(Mesh { verts, faces: f })
-                            }
-                        })
+                        hull_of(&verts).or_else(|| if f.is_empty() { None } else { Some(Mesh { verts, faces: f }) })
                     })
                     .collect();
                 if v.is_empty() {
-                    decomposition_error =
-                        Some("convex decomposition returned no hulls".to_string());
+                    decomposition_error = Some("convex decomposition returned no hulls".to_string());
                 } else {
                     meshes = Some(v);
                 }
             }
-            Err(_) => {
-                decomposition_error =
-                    Some("convex decomposition panicked on this geometry".to_string())
-            }
+            Err(_) => decomposition_error = Some("convex decomposition panicked on this geometry".to_string()),
         }
     }
     let meshes = match meshes {
         Some(m) => m,
-        None => vec![hull_of(&all)
-            .ok_or_else(|| "could not build a convex hull (flat or empty geometry)".to_string())?],
+        None => vec![hull_of(&all).ok_or_else(|| "could not build a convex hull (flat or empty geometry)".to_string())?],
     };
-    Ok(RawHulls {
-        hulls: meshes,
-        decomposition_error,
-    })
+    Ok(RawHulls { hulls: meshes, decomposition_error })
 }
 
 /// Apply the per-hull face cap (cheap, so it is redone on every run).
@@ -217,57 +183,26 @@ pub fn trim(raw: &RawHulls, cap: usize) -> Generated {
             *m = simplify_hull(m.clone(), cap);
         }
     }
-    Generated {
-        hulls: meshes,
-        decomposition_error: raw.decomposition_error.clone(),
-        hulls_over_cap: over,
-    }
+    Generated { hulls: meshes, decomposition_error: raw.decomposition_error.clone(), hulls_over_cap: over }
 }
 
 /// Axis-aligned box as an outward, counter-clockwise triangle mesh.
 pub fn box_mesh(min: V3, max: V3) -> Mesh {
-    let v = |x: usize, y: usize, z: usize| {
-        [
-            if x == 0 { min[0] } else { max[0] },
-            if y == 0 { min[1] } else { max[1] },
-            if z == 0 { min[2] } else { max[2] },
-        ]
-    };
-    let verts = vec![
-        v(0, 0, 0),
-        v(1, 0, 0),
-        v(1, 1, 0),
-        v(0, 1, 0),
-        v(0, 0, 1),
-        v(1, 0, 1),
-        v(1, 1, 1),
-        v(0, 1, 1),
-    ];
+    let v = |x: usize, y: usize, z: usize| [if x == 0 { min[0] } else { max[0] }, if y == 0 { min[1] } else { max[1] }, if z == 0 { min[2] } else { max[2] }];
+    let verts = vec![v(0, 0, 0), v(1, 0, 0), v(1, 1, 0), v(0, 1, 0), v(0, 0, 1), v(1, 0, 1), v(1, 1, 1), v(0, 1, 1)];
     let faces = vec![
-        [0, 3, 2],
-        [0, 2, 1], // -z
-        [4, 5, 6],
-        [4, 6, 7], // +z
-        [0, 4, 7],
-        [0, 7, 3], // -x
-        [1, 2, 6],
-        [1, 6, 5], // +x
-        [0, 1, 5],
-        [0, 5, 4], // -y
-        [3, 7, 6],
-        [3, 6, 2], // +y
+        [0, 3, 2], [0, 2, 1], // -z
+        [4, 5, 6], [4, 6, 7], // +z
+        [0, 4, 7], [0, 7, 3], // -x
+        [1, 2, 6], [1, 6, 5], // +x
+        [0, 1, 5], [0, 5, 4], // -y
+        [3, 7, 6], [3, 6, 2], // +y
     ];
     Mesh { verts, faces }
 }
 
 /// Small box at the bottom centre of the model, already in output units (cm).
-pub fn fallback_box(
-    parts: &[Part],
-    size_cm: f64,
-    scale: f64,
-    off_x: f64,
-    off_y: f64,
-) -> Option<Mesh> {
+pub fn fallback_box(parts: &[Part], size_cm: f64, scale: f64, off_x: f64, off_y: f64) -> Option<Mesh> {
     let mut mn = [f64::MAX; 3];
     let mut mx = [f64::MIN; 3];
     let mut any = false;
@@ -283,16 +218,9 @@ pub fn fallback_box(
     if !any {
         return None;
     }
-    let (cx, cz, bottom) = (
-        (mn[0] + mx[0]) / 2.0 + off_x,
-        (mn[2] + mx[2]) / 2.0,
-        mn[1] + off_y,
-    );
+    let (cx, cz, bottom) = ((mn[0] + mx[0]) / 2.0 + off_x, (mn[2] + mx[2]) / 2.0, mn[1] + off_y);
     let h = size_cm / 2.0;
-    Some(box_mesh(
-        [cx - h, bottom, cz - h],
-        [cx + h, bottom + size_cm, cz + h],
-    ))
+    Some(box_mesh([cx - h, bottom, cz - h], [cx + h, bottom + size_cm, cz + h]))
 }
 
 /// Push one collision shape outward by about `d` (same units as the vertices). Vertex normals are
@@ -300,15 +228,7 @@ pub fn fallback_box(
 /// when the winding points inward, with a mitre factor (capped at 1.5, so sharp corners do not shoot out) so a box grows by about `d` on every side.
 pub fn inflate(mesh: &Mesh, d: f64) -> Vec<V3> {
     let (v, f) = (&mesh.verts, &mesh.faces);
-    let mut fn_: Vec<V3> = f
-        .iter()
-        .map(|t| {
-            cross(
-                sub(v[t[1] as usize], v[t[0] as usize]),
-                sub(v[t[2] as usize], v[t[0] as usize]),
-            )
-        })
-        .collect();
+    let mut fn_: Vec<V3> = f.iter().map(|t| cross(sub(v[t[1] as usize], v[t[0] as usize]), sub(v[t[2] as usize], v[t[0] as usize]))).collect();
     if signed_volume(v, f) < 0.0 {
         fn_.iter_mut().for_each(|n| *n = mul(*n, -1.0));
     }
@@ -318,11 +238,7 @@ pub fn inflate(mesh: &Mesh, d: f64) -> Vec<V3> {
     let mut vn = vec![[0.0f64; 3]; v.len()];
     let mut uniq: Vec<(usize, V3)> = Vec::new();
     for (fi, t) in f.iter().enumerate() {
-        let key3 = [
-            (fu[fi][0] * 1000.0).round() as i32,
-            (fu[fi][1] * 1000.0).round() as i32,
-            (fu[fi][2] * 1000.0).round() as i32,
-        ];
+        let key3 = [(fu[fi][0] * 1000.0).round() as i32, (fu[fi][1] * 1000.0).round() as i32, (fu[fi][2] * 1000.0).round() as i32];
         for &vi in t {
             if seen.insert((vi, key3)) {
                 vn[vi as usize] = add(vn[vi as usize], fu[fi]);
@@ -352,11 +268,7 @@ pub fn unique_names(names: impl Iterator<Item = String>) -> Vec<String> {
     names
         .map(|base| {
             let n = used.entry(base.clone()).or_insert(0);
-            let out = if *n == 0 {
-                base.clone()
-            } else {
-                format!("{base}_{:02}", *n)
-            };
+            let out = if *n == 0 { base.clone() } else { format!("{base}_{:02}", *n) };
             *n += 1;
             out
         })

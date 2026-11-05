@@ -20,6 +20,18 @@ pub enum CollisionQuality {
     High,
 }
 
+/// How emissive data in the file is interpreted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EmissiveMode {
+    /// Recognise toon-shader exports that put the colour in the *emission* slot: an emissive texture that is just the albedo (same
+    /// image as the base texture, or the only colour a material has) is not real glow. It is dropped, or promoted to the diffuse
+    /// texture when the material has no base texture. Black or zero-factor emission is ignored too.
+    Auto,
+    /// Follow the file literally: every emissive texture or factor becomes glow.
+    Literal,
+}
+
 /// What to do when `<output_dir>/<name>` already exists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -66,6 +78,11 @@ pub struct ConvertOptions {
     pub drop_transparent: bool,
     /// Multiply base colour textures by `baseColorFactor` (the glTF spec). Off to stay identical to the old Python converter.
     pub apply_base_color_factor: bool,
+    /// See [`EmissiveMode`]. Fixes models whose colour is stored as emission (flat or black diffuse, whole model glowing).
+    pub emissive_mode: EmissiveMode,
+    /// Remove parts whose material or object name contains "outline": toon outline shells (inverted hulls) are only meant to be
+    /// seen with special culling and show up as solid dark surfaces in VotV.
+    pub drop_outline_parts: bool,
 
     /// Generate collision from the visible geometry when the source has none. When false, only a small
     /// box collider is written (the game needs at least one `UCX_` object or it skips health, edible and bites).
@@ -124,6 +141,8 @@ impl Default for ConvertOptions {
             max_atlas_size: 4096,
             drop_transparent: false,
             apply_base_color_factor: false,
+            emissive_mode: EmissiveMode::Auto,
+            drop_outline_parts: true,
             generate_collision: true,
             force_generate_collision: false,
             collision_quality: CollisionQuality::High,
@@ -144,18 +163,14 @@ impl Default for ConvertOptions {
 
 impl ConvertOptions {
     pub(crate) fn hull_face_cap(&self) -> usize {
-        self.max_hull_faces
-            .map(|v| v as usize)
-            .unwrap_or(match self.collision_quality {
-                CollisionQuality::High => 200,
-                CollisionQuality::Low => 80,
-            })
+        self.max_hull_faces.map(|v| v as usize).unwrap_or(match self.collision_quality {
+            CollisionQuality::High => 200,
+            CollisionQuality::Low => 80,
+        })
     }
 
     /// Kept so older callers compile; the properties are used as they are.
-    #[deprecated(
-        note = "use `properties` directly; the separate `edible` option is gone (physical_material 8 is food)"
-    )]
+    #[deprecated(note = "use `properties` directly; the separate `edible` option is gone (physical_material 8 is food)")]
     pub fn effective_properties(&self) -> PropertiesCfg {
         self.properties.clone()
     }
@@ -163,24 +178,17 @@ impl ConvertOptions {
     /// Load options saved by an earlier version (for example a `votv_convert.json` sidecar or a preset). Unknown fields are ignored,
     /// missing ones take their defaults, and retired fields are migrated: `"edible": true` becomes `properties.physical_material = 8`.
     pub fn from_json(text: &str) -> Result<Self> {
-        let mut v: serde_json::Value = serde_json::from_str(text)
-            .map_err(|e| ConvertError::InvalidOption(format!("not valid JSON: {e}")))?;
+        let mut v: serde_json::Value = serde_json::from_str(text).map_err(|e| ConvertError::InvalidOption(format!("not valid JSON: {e}")))?;
         if let Some(o) = v.as_object_mut() {
-            let edible = o
-                .remove("edible")
-                .and_then(|e| e.as_bool())
-                .unwrap_or(false);
+            let edible = o.remove("edible").and_then(|e| e.as_bool()).unwrap_or(false);
             if edible {
-                let props = o
-                    .entry("properties")
-                    .or_insert_with(|| serde_json::json!({}));
+                let props = o.entry("properties").or_insert_with(|| serde_json::json!({}));
                 if let Some(p) = props.as_object_mut() {
                     p.insert("physical_material".into(), serde_json::json!(8));
                 }
             }
         }
-        serde_json::from_value(v)
-            .map_err(|e| ConvertError::InvalidOption(format!("could not read the options: {e}")))
+        serde_json::from_value(v).map_err(|e| ConvertError::InvalidOption(format!("could not read the options: {e}")))
     }
 
     /// The options as JSON (what the sidecar stores).
@@ -197,9 +205,7 @@ impl ConvertOptions {
         if self.max_tile_size == 0 || self.max_atlas_size == 0 {
             return bad("max tile / atlas size must be at least 1");
         }
-        self.properties
-            .validate()
-            .map_err(ConvertError::InvalidOption)?;
+        self.properties.validate().map_err(ConvertError::InvalidOption)?;
         if self.max_decomp_hulls == 0 {
             return bad("max decomposition hulls must be at least 1");
         }

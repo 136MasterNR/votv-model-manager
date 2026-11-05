@@ -42,6 +42,16 @@ only edits `crates/votv-convert` and `crates/votv-model-core`; the GUI is not pa
 - New derived values, because the game computes them from the collision hulls: `Stats::{hull_size_cm, bites, edible, health_in_game}` and the core helpers
   `bites_for`, `auto_health`, `PropertiesCfg::{is_edible, health_in_game}`.
 - CLI: `--edible` replaced by `--physical-material 8`; new `--breakable` and `--health N`.
+- **Toon-shader exports** (found with Blue Archive Miyu and Honkai Higokumaru, which store the albedo in the *emission* slot):
+  - New `EmissiveMode` option (`emissive_mode`, default `Auto`; `Literal` = follow the file): an emissive texture that is the same image as the
+    base texture is not glow (`emissive_duplicate_ignored`); a material without a base texture whose emissive texture is a real colour map
+    (mean luminance >= 48) uses it as the diffuse (`emissive_used_as_colour`, fixes flat/black diffuse); black emission or a factor below 0.02 is ignored
+    (`emissive_ignored`). `inspect()` reports these as hints. The scene cache key includes the mode.
+  - The emissive texture is now multiplied by `emissiveFactor` (glTF rule); before, the factor was ignored.
+  - BLEND classification refined: a base alpha factor >= 0.9 no longer counts as translucent; a BLEND texture is translucent only when >= 15% of its covered
+    texels are semi-transparent, otherwise it is a cutout (hair cards, soft edges) or opaque. (Miyu's hair, BLEND with alpha 0.99, was dropped.)
+  - New option `drop_outline_parts` (default true): parts whose material or object name contains "outline" (toon inverted-hull shells) are removed (`outline_dropped`).
+  - New `DiagCode`s: `EmissiveUsedAsColour`, `EmissiveDuplicateIgnored`, `EmissiveIgnored`, `OutlineDropped`. CLI: `--literal-emissive`, `--keep-outlines`.
 - CLI is dev-only and no longer a default feature.
 - `show_collision` pushes the red copy only as far as needed to avoid z-fighting (auto: 0.2% of model size, 0.05-0.5 cm; was 1.5%, min 0.5 cm,
   with corners up to 2.5x further) and has a new option `show_collision_offset: Option<f64>` (cm, `None` = auto). Output of `--show-coll`

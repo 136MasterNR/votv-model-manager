@@ -35,13 +35,7 @@ pub enum Group {
 }
 
 impl Group {
-    pub const ALL: [Group; 5] = [
-        Self::Durability,
-        Self::Material,
-        Self::Light,
-        Self::Appearance,
-        Self::Experimental,
-    ];
+    pub const ALL: [Group; 5] = [Self::Durability, Self::Material, Self::Light, Self::Appearance, Self::Experimental];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -73,23 +67,12 @@ pub enum Confidence {
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
     Bool,
-    Int {
-        min: i64,
-        max: i64,
-    },
-    Float {
-        min: f64,
-        max: f64,
-        step: f64,
-    },
+    Int { min: i64, max: i64 },
+    Float { min: f64, max: f64, step: f64 },
     /// RGB, each channel 0..1.
     Color,
     /// X/Y/Z in cm.
-    Vec3 {
-        min: f64,
-        max: f64,
-        step: f64,
-    },
+    Vec3 { min: f64, max: f64, step: f64 },
     /// An integer whose value is the index into the labels.
     Choice(&'static [&'static str]),
 }
@@ -147,24 +130,8 @@ impl PropValue {
 
 const FILTERS: &[&str] = &["Nearest", "Bilinear", "Trilinear", "Default"];
 
-const fn spec(
-    key: &'static str,
-    label: &'static str,
-    group: Group,
-    kind: Kind,
-    confidence: Confidence,
-    doc: &'static str,
-) -> PropertySpec {
-    PropertySpec {
-        key,
-        label,
-        group,
-        kind,
-        doc,
-        confidence,
-        virtual_key: false,
-        optional: false,
-    }
+const fn spec(key: &'static str, label: &'static str, group: Group, kind: Kind, confidence: Confidence, doc: &'static str) -> PropertySpec {
+    PropertySpec { key, label, group, kind, doc, confidence, virtual_key: false, optional: false }
 }
 
 /// Every property, in panel order.
@@ -251,14 +218,8 @@ impl PropertiesCfg {
     pub fn set(&mut self, key: &str, v: PropValue) -> Result<(), String> {
         let bad = || format!("wrong kind of value for {key}");
         let byte = |v: &PropValue, max: i64| -> Result<u8, String> {
-            let i = v
-                .as_int()
-                .ok_or_else(|| format!("wrong kind of value for {key}"))?;
-            if (0..=max).contains(&i) {
-                Ok(i as u8)
-            } else {
-                Err(format!("{key} must be 0-{max}"))
-            }
+            let i = v.as_int().ok_or_else(|| format!("wrong kind of value for {key}"))?;
+            if (0..=max).contains(&i) { Ok(i as u8) } else { Err(format!("{key} must be 0-{max}")) }
         };
         match key {
             "indestructible" => self.indestructible = v.as_bool().ok_or_else(bad)?,
@@ -305,12 +266,9 @@ mod tests {
     fn every_spec_can_be_read_and_written_back_unchanged() {
         let mut cfg = PropertiesCfg::default();
         for s in PROPERTY_SPECS {
-            let v = cfg
-                .get(s.key)
-                .unwrap_or_else(|| panic!("no getter for {}", s.key));
+            let v = cfg.get(s.key).unwrap_or_else(|| panic!("no getter for {}", s.key));
             let before = cfg.clone();
-            cfg.set(s.key, v)
-                .unwrap_or_else(|e| panic!("{}: {e}", s.key));
+            cfg.set(s.key, v).unwrap_or_else(|e| panic!("{}: {e}", s.key));
             assert_eq!(cfg, before, "{} changed by get/set", s.key);
         }
         let keys: Vec<_> = PROPERTY_SPECS.iter().map(|s| s.key).collect();
@@ -328,17 +286,10 @@ mod tests {
         let text = cfg.to_cfg_string(true);
         let written: Vec<&str> = text.lines().map(|l| l.split('=').next().unwrap()).collect();
         for k in &written {
-            assert!(
-                PROPERTY_SPECS.iter().any(|s| s.key == *k && !s.virtual_key),
-                "{k} is written but not described"
-            );
+            assert!(PROPERTY_SPECS.iter().any(|s| s.key == *k && !s.virtual_key), "{k} is written but not described");
         }
         for s in PROPERTY_SPECS.iter().filter(|s| !s.virtual_key) {
-            assert!(
-                written.contains(&s.key),
-                "{} is described but never written",
-                s.key
-            );
+            assert!(written.contains(&s.key), "{} is described but never written", s.key);
         }
         // the game's prepareCfg has 16 lines: our 17 keys are those plus the experimental explotano
         assert_eq!(written.len(), 17);

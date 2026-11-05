@@ -160,3 +160,42 @@ for name, kw, tex in [
 ]:
     trimesh.Scene(box_with(PBRMaterial(name=name, baseColorTexture=tex, roughnessFactor=0.5, metallicFactor=0, **kw))).export(f"{out}/{name}.glb")
 print("added alpha fixtures")
+
+
+# 13-19. emission and alpha cases taken from real toon-shader exports (Miyu, Higokumaru)
+def albedo_like(n=64):
+    a = np.zeros((n, n, 3), np.uint8); a[...] = (230, 180, 160); a[::8, :, :] = (250, 120, 120)
+    return Image.fromarray(a)
+
+def rgba_alpha(w=64, h=64, clear_rows=0, semi_rows=0, alpha=255):
+    a = np.zeros((h, w, 4), np.uint8); a[..., :3] = (60, 50, 90); a[..., 3] = alpha
+    a[:clear_rows, :, 3] = 0; a[clear_rows:clear_rows + semi_rows, :, 3] = 128
+    return Image.fromarray(a)
+
+def pbr(name, **kw):
+    return PBRMaterial(name=name, roughnessFactor=0.5, metallicFactor=0, **kw)
+
+def export(name, mat):
+    trimesh.Scene(box_with(mat)).export(f"{out}/{name}.glb")
+
+# colour only in the emissive texture, near-black base factor (Miyu's face, all of Higokumaru)
+export("selflit", pbr("selflit", baseColorFactor=[0.03, 0.03, 0.03, 1.0], emissiveTexture=albedo_like(), emissiveFactor=[0.5, 0.5, 0.5]))
+# emissive texture is a copy of the base texture (Miyu's body, cloth, hair)
+t = grad(64, 64)
+export("emissive_dup", pbr("dup", baseColorTexture=t, emissiveTexture=t.copy(), emissiveFactor=[0.5, 0.5, 0.5]))
+# real glow: a dark mask with a bright spot over a different base texture
+mask = np.zeros((64, 64, 3), np.uint8); mask[10:20, 10:20] = (255, 255, 200)
+export("glow", pbr("glow", baseColorTexture=grad(64, 64), emissiveTexture=Image.fromarray(mask), emissiveFactor=[1, 1, 1]))
+# emissive texture that is entirely black
+export("black_emissive", pbr("blackem", baseColorTexture=grad(64, 64), emissiveTexture=Image.fromarray(np.zeros((64, 64, 3), np.uint8)), emissiveFactor=[1, 1, 1]))
+# BLEND hair: factor alpha 0.99, a few transparent rows and soft edge rows (should be kept as a cutout)
+export("blend_hair", pbr("hair", baseColorTexture=rgba_alpha(clear_rows=3, semi_rows=2), baseColorFactor=[1, 1, 1, 0.99], alphaMode="BLEND"))
+# BLEND with a uniformly see-through texture (real glass: dropped)
+export("blend_glass_tex", pbr("glasstex", baseColorTexture=rgba_alpha(alpha=100), alphaMode="BLEND"))
+# an opaque dark outline shell next to the body
+sc = trimesh.Scene()
+sc.add_geometry(box_with(pbr("Hero_Body", baseColorTexture=grad(64, 64))), node_name="body")
+o = trimesh.creation.box(extents=(1.05, 1.05, 1.05))
+o.visual = TextureVisuals(uv=np.zeros((8, 2)), material=pbr("Hero_Outline", baseColorFactor=[0.06, 0.06, 0.06, 1.0]))
+sc.add_geometry(o, node_name="outline_shell"); sc.export(f"{out}/outline.glb")
+print("added emission/alpha fixtures")

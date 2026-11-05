@@ -15,6 +15,7 @@ use image::RgbaImage;
 
 use crate::error::{ConvertError, Result};
 use crate::geom::*;
+use crate::options::EmissiveMode;
 use crate::report::{Ctx, DiagCode};
 
 pub struct Tex {
@@ -87,43 +88,45 @@ fn convert_image(d: &gltf::image::Data) -> Option<Tex> {
     let mut had_alpha = false;
     match d.format {
         R8 => (0..n).for_each(|i| out.extend_from_slice(&[px[i], px[i], px[i], 255])),
-        R8G8 => (0..n)
-            .for_each(|i| out.extend_from_slice(&[px[i * 2], px[i * 2], px[i * 2], px[i * 2 + 1]])),
-        R8G8B8 => (0..n)
-            .for_each(|i| out.extend_from_slice(&[px[i * 3], px[i * 3 + 1], px[i * 3 + 2], 255])),
+        R8G8 => (0..n).for_each(|i| out.extend_from_slice(&[px[i * 2], px[i * 2], px[i * 2], px[i * 2 + 1]])),
+        R8G8B8 => (0..n).for_each(|i| out.extend_from_slice(&[px[i * 3], px[i * 3 + 1], px[i * 3 + 2], 255])),
         R8G8B8A8 => {
             out.extend_from_slice(px);
             had_alpha = true;
         }
         R16 => (0..n).for_each(|i| out.extend_from_slice(&[hi(i), hi(i), hi(i), 255])),
-        R16G16 => (0..n)
-            .for_each(|i| out.extend_from_slice(&[hi(i * 2), hi(i * 2), hi(i * 2), hi(i * 2 + 1)])),
-        R16G16B16 => (0..n)
-            .for_each(|i| out.extend_from_slice(&[hi(i * 3), hi(i * 3 + 1), hi(i * 3 + 2), 255])),
+        R16G16 => (0..n).for_each(|i| out.extend_from_slice(&[hi(i * 2), hi(i * 2), hi(i * 2), hi(i * 2 + 1)])),
+        R16G16B16 => (0..n).for_each(|i| out.extend_from_slice(&[hi(i * 3), hi(i * 3 + 1), hi(i * 3 + 2), 255])),
         R16G16B16A16 => {
-            (0..n).for_each(|i| {
-                out.extend_from_slice(&[hi(i * 4), hi(i * 4 + 1), hi(i * 4 + 2), hi(i * 4 + 3)])
-            });
+            (0..n).for_each(|i| out.extend_from_slice(&[hi(i * 4), hi(i * 4 + 1), hi(i * 4 + 2), hi(i * 4 + 3)]));
             had_alpha = true;
         }
         _ => return None, // float formats: not used by glTF 2.0 core
     }
     let hash = fnv(&out) ^ ((w as u64) << 32 | h as u64);
-    RgbaImage::from_raw(w, h, out).map(|img| Tex {
-        img,
-        had_alpha,
-        hash,
-    })
+    RgbaImage::from_raw(w, h, out).map(|img| Tex { img, had_alpha, hash })
 }
 
 fn json_f64(v: &serde_json::Value) -> Option<f64> {
     v.as_f64()
 }
 
+/// (mean luminance 0-255, brightest channel value) of a texture.
+fn brightness(t: &Tex) -> (f64, u8) {
+    let (mut sum, mut max, mut n) = (0.0f64, 0u8, 0u64);
+    for p in t.img.pixels() {
+        sum += 0.2126 * p[0] as f64 + 0.7152 * p[1] as f64 + 0.0722 * p[2] as f64;
+        max = max.max(p[0]).max(p[1]).max(p[2]);
+        n += 1;
+    }
+    (if n > 0 { sum / n as f64 } else { 0.0 }, max)
+}
+
 fn read_materials(
     doc: &gltf::Document,
     raw: &serde_json::Value,
     textures: &[Option<Tex>],
+    mode: EmissiveMode,
     ctx: &mut Ctx,
 ) -> Vec<Material> {
     let raw_mats = raw.get("materials").and_then(|m| m.as_array());
@@ -133,15 +136,9 @@ fn read_materials(
         let rm = raw_mats.and_then(|a| a.get(i));
         let pbr_raw = rm.and_then(|x| x.get("pbrMetallicRoughness"));
         let pbr = m.pbr_metallic_roughness();
-        let name = m
-            .name()
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| "material".to_string());
+        let name = m.name().map(|s| s.to_string()).unwrap_or_else(|| "material".to_string());
 
-        let tex_of = |t: Option<gltf::texture::Info>,
-                      label: &str,
-                      ctx: &mut Ctx|
-         -> Option<usize> {
+        let tex_of = |t: Option<gltf::texture::Info>, label: &str, ctx: &mut Ctx| -> Option<usize> {
             let t = t?;
             if t.tex_coord() != 0 {
                 ctx.warn(DiagCode::UvSetIgnored, format!(
@@ -158,7 +155,7 @@ fn read_materials(
 
         let mut base_tex = tex_of(pbr.base_color_texture(), "base colour", ctx);
         let mr_tex = tex_of(pbr.metallic_roughness_texture(), "metallic-roughness", ctx);
-        let emissive_tex = tex_of(m.emissive_texture(), "emissive", ctx);
+        let mut emissive_tex = tex_of(m.emissive_texture(), "emissive", ctx);
         let normal_tex = m.normal_texture().and_then(|n| {
             if n.tex_coord() != 0 {
                 ctx.warn(DiagCode::UvSetIgnored, format!("material {name:?}: its normal texture uses UV set {}; only UV set 0 is supported.", n.tex_coord()));
@@ -174,19 +171,14 @@ fn read_materials(
             .map(|a| {
                 let mut f = [0u8; 4];
                 for k in 0..4 {
-                    f[k] = (json_f64(&a[k]).unwrap_or(1.0) * 255.0)
-                        .round()
-                        .clamp(0.0, 255.0) as u8;
+                    f[k] = (json_f64(&a[k]).unwrap_or(1.0) * 255.0).round().clamp(0.0, 255.0) as u8;
                 }
                 f
             });
         // Older KHR_materials_pbrSpecularGlossiness materials: use the diffuse texture / colour as base colour (what trimesh
         // did). Specular and glossiness are not converted.
         let mut base_factor = base_factor;
-        if let Some(sg) = rm
-            .and_then(|x| x.get("extensions"))
-            .and_then(|e| e.get("KHR_materials_pbrSpecularGlossiness"))
-        {
+        if let Some(sg) = rm.and_then(|x| x.get("extensions")).and_then(|e| e.get("KHR_materials_pbrSpecularGlossiness")) {
             spec_gloss += 1;
             if base_tex.is_none() {
                 if let Some(ti) = sg.get("diffuseTexture") {
@@ -202,42 +194,54 @@ fn read_materials(
                 }
             }
             if base_factor.is_none() {
-                base_factor = sg
-                    .get("diffuseFactor")
-                    .and_then(|v| v.as_array())
-                    .filter(|a| a.len() == 4)
-                    .map(|a| {
-                        let mut f = [0u8; 4];
-                        for k in 0..4 {
-                            f[k] = (json_f64(&a[k]).unwrap_or(1.0) * 255.0)
-                                .round()
-                                .clamp(0.0, 255.0) as u8;
-                        }
-                        f
-                    });
+                base_factor = sg.get("diffuseFactor").and_then(|v| v.as_array()).filter(|a| a.len() == 4).map(|a| {
+                    let mut f = [0u8; 4];
+                    for k in 0..4 {
+                        f[k] = (json_f64(&a[k]).unwrap_or(1.0) * 255.0).round().clamp(0.0, 255.0) as u8;
+                    }
+                    f
+                });
             }
         }
-        let roughness = pbr_raw
-            .and_then(|p| p.get("roughnessFactor"))
-            .and_then(json_f64);
-        let metallic = pbr_raw
-            .and_then(|p| p.get("metallicFactor"))
-            .and_then(json_f64);
-        let emissive_factor = rm
+        let roughness = pbr_raw.and_then(|p| p.get("roughnessFactor")).and_then(json_f64);
+        let metallic = pbr_raw.and_then(|p| p.get("metallicFactor")).and_then(json_f64);
+        let mut emissive_factor = rm
             .and_then(|x| x.get("emissiveFactor"))
             .and_then(|v| v.as_array())
             .filter(|a| a.len() == 3)
-            .map(|a| {
-                [
-                    json_f64(&a[0]).unwrap_or(0.0),
-                    json_f64(&a[1]).unwrap_or(0.0),
-                    json_f64(&a[2]).unwrap_or(0.0),
-                ]
-            });
-        let alpha_mode = rm
-            .and_then(|x| x.get("alphaMode"))
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
+            .map(|a| [json_f64(&a[0]).unwrap_or(0.0), json_f64(&a[1]).unwrap_or(0.0), json_f64(&a[2]).unwrap_or(0.0)]);
+        let alpha_mode = rm.and_then(|x| x.get("alphaMode")).and_then(|v| v.as_str()).map(|s| s.to_string());
+
+        // Toon-shader exports (MMD / game rips imported into Blender) often store the albedo in the *emission* slot. Taken literally the
+        // diffuse is flat or black and the whole model glows. Recognise that and fix it (see EmissiveMode).
+        if mode == EmissiveMode::Auto {
+            if let Some(ei) = emissive_tex {
+                let et = textures[ei].as_ref().expect("tex_of only returns decoded textures");
+                let (mean, max) = brightness(et);
+                let fmax = emissive_factor.map(|f| f[0].max(f[1]).max(f[2])).unwrap_or(1.0);
+                let same_as_base = base_tex.and_then(|bi| textures[bi].as_ref()).map(|b| b.hash == et.hash).unwrap_or(false);
+                if max < 10 || fmax < 0.02 {
+                    ctx.info(DiagCode::EmissiveIgnored, format!("material {name:?}: its emissive texture is black or switched off by its factor, so no glow is baked."));
+                    emissive_tex = None;
+                    emissive_factor = None;
+                } else if base_tex.is_none() && mean >= 48.0 {
+                    ctx.info(DiagCode::EmissiveUsedAsColour, format!("material {name:?}: its colour is stored in the emissive texture (toon-shader export), so that texture is used as the diffuse colour and no glow is baked."));
+                    base_tex = Some(ei);
+                    base_factor = base_factor.map(|f| [255, 255, 255, f[3]]); // keep only its alpha
+                    emissive_tex = None;
+                    emissive_factor = None;
+                } else if same_as_base {
+                    ctx.info(DiagCode::EmissiveDuplicateIgnored, format!("material {name:?}: its emissive texture is the same image as its base colour (not real glow), so no glow is baked."));
+                    emissive_tex = None;
+                    emissive_factor = None;
+                }
+            }
+            if emissive_tex.is_none() {
+                if emissive_factor.map(|f| f.iter().all(|c| *c < 0.02)).unwrap_or(false) {
+                    emissive_factor = None;
+                }
+            }
+        }
 
         out.push(Material {
             name,
@@ -280,11 +284,7 @@ fn computed_normals(pos: &[V3], tris: &[[u32; 3]], weld: &[usize]) -> Vec<V3> {
     (0..pos.len())
         .map(|i| {
             let n = normalize(acc[weld[i]]);
-            if len(n) < 0.5 {
-                [0.0, 0.0, 1.0]
-            } else {
-                n
-            }
+            if len(n) < 0.5 { [0.0, 0.0, 1.0] } else { n }
         })
         .collect()
 }
@@ -296,11 +296,7 @@ fn triangulate(mode: gltf::mesh::Mode, idx: &[u32]) -> Vec<[u32; 3]> {
         Triangles => idx.chunks_exact(3).for_each(|c| t.push([c[0], c[1], c[2]])),
         TriangleStrip => {
             for i in 0..idx.len().saturating_sub(2) {
-                if i % 2 == 0 {
-                    t.push([idx[i], idx[i + 1], idx[i + 2]])
-                } else {
-                    t.push([idx[i + 1], idx[i], idx[i + 2]])
-                }
+                if i % 2 == 0 { t.push([idx[i], idx[i + 1], idx[i + 2]]) } else { t.push([idx[i + 1], idx[i], idx[i + 2]]) }
             }
         }
         TriangleFan => {
@@ -324,13 +320,9 @@ fn compute_world(doc: &gltf::Document) -> (HashMap<usize, M4>, Vec<usize>) {
     let roots: Vec<gltf::Node> = match doc.default_scene().or_else(|| doc.scenes().next()) {
         Some(s) => s.nodes().collect(),
         None => {
-            let children: std::collections::HashSet<usize> = doc
-                .nodes()
-                .flat_map(|n| n.children().map(|c| c.index()).collect::<Vec<_>>())
-                .collect();
-            doc.nodes()
-                .filter(|n| !children.contains(&n.index()))
-                .collect()
+            let children: std::collections::HashSet<usize> =
+                doc.nodes().flat_map(|n| n.children().map(|c| c.index()).collect::<Vec<_>>()).collect();
+            doc.nodes().filter(|n| !children.contains(&n.index())).collect()
         }
     };
     // Visit order matches trimesh's glTF loader (a LIFO stack: last root first, then its children
@@ -375,40 +367,27 @@ fn skin_matrices(w: &Walk) -> Vec<Vec<M4>> {
 }
 
 /// Rebuild the GLB without `extensionsRequired` (see `load`). Returns the new bytes and the names that were required.
-fn strip_required_extensions(
-    glb: &gltf::binary::Glb,
-    raw: &serde_json::Value,
-) -> Result<(Vec<u8>, Vec<String>)> {
+fn strip_required_extensions(glb: &gltf::binary::Glb, raw: &serde_json::Value) -> Result<(Vec<u8>, Vec<String>)> {
     let mut v = raw.clone();
     let names: Vec<String> = v
         .get("extensionsRequired")
         .and_then(|a| a.as_array())
-        .map(|a| {
-            a.iter()
-                .filter_map(|x| x.as_str().map(String::from))
-                .collect()
-        })
+        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
         .unwrap_or_default();
     if let Some(o) = v.as_object_mut() {
         o.remove("extensionsRequired");
     }
     let json = serde_json::to_vec(&v).map_err(|e| ConvertError::Unreadable(e.to_string()))?;
     let g = gltf::binary::Glb {
-        header: gltf::binary::Header {
-            magic: *b"glTF",
-            version: 2,
-            length: 0,
-        },
+        header: gltf::binary::Header { magic: *b"glTF", version: 2, length: 0 },
         json: std::borrow::Cow::Owned(json),
         bin: glb.bin.clone(),
     };
-    let bytes = g
-        .to_vec()
-        .map_err(|e| ConvertError::Unreadable(e.to_string()))?;
+    let bytes = g.to_vec().map_err(|e| ConvertError::Unreadable(e.to_string()))?;
     Ok((bytes, names))
 }
 
-pub fn load(path: &Path, humanoid: bool, ctx: &mut Ctx) -> Result<Scene> {
+pub fn load(path: &Path, humanoid: bool, emissive_mode: EmissiveMode, ctx: &mut Ctx) -> Result<Scene> {
     let bytes = std::fs::read(path)?;
     let glb = gltf::binary::Glb::from_slice(&bytes)
         .map_err(|e| ConvertError::Unreadable(format!("bad .glb header: {e}")))?;
@@ -430,19 +409,11 @@ pub fn load(path: &Path, humanoid: bool, ctx: &mut Ctx) -> Result<Scene> {
 
     let textures: Vec<Option<Tex>> = images.iter().map(convert_image).collect();
     ctx.check_cancel()?;
-    let materials = read_materials(&doc, &raw, &textures, ctx);
+    let materials = read_materials(&doc, &raw, &textures, emissive_mode, ctx);
 
     let (world, order) = compute_world(&doc);
-    let walk = Walk {
-        doc: &doc,
-        buffers: &buffers,
-        world,
-    };
-    let skins = if humanoid {
-        skin_matrices(&walk)
-    } else {
-        Vec::new()
-    };
+    let walk = Walk { doc: &doc, buffers: &buffers, world };
+    let skins = if humanoid { skin_matrices(&walk) } else { Vec::new() };
 
     let mut parts = Vec::new();
     let mut collision_parts = Vec::new();
@@ -453,12 +424,7 @@ pub fn load(path: &Path, humanoid: bool, ctx: &mut Ctx) -> Result<Scene> {
         let node = doc.nodes().nth(ni).unwrap();
         let Some(mesh) = node.mesh() else { continue };
         let m = walk.world[&ni];
-        let display = node
-            .name()
-            .filter(|s| !s.is_empty())
-            .or_else(|| mesh.name())
-            .unwrap_or("")
-            .to_string();
+        let display = node.name().filter(|s| !s.is_empty()).or_else(|| mesh.name()).unwrap_or("").to_string();
         let flip = det3(&m) < 0.0;
         let nmat = normal_matrix(&m);
 
@@ -468,12 +434,7 @@ pub fn load(path: &Path, humanoid: bool, ctx: &mut Ctx) -> Result<Scene> {
                 continue;
             }
             let reader = prim.reader(|b| Some(&buffers[b.index()]));
-            let Some(local_pos) = reader
-                .read_positions()
-                .map(|p| p.collect::<Vec<[f32; 3]>>())
-            else {
-                continue;
-            };
+            let Some(local_pos) = reader.read_positions().map(|p| p.collect::<Vec<[f32; 3]>>()) else { continue };
             let idx: Vec<u32> = match reader.read_indices() {
                 Some(i) => i.into_u32().collect(),
                 None => (0..local_pos.len() as u32).collect(),
@@ -485,19 +446,14 @@ pub fn load(path: &Path, humanoid: bool, ctx: &mut Ctx) -> Result<Scene> {
                 continue;
             }
             let file_normals: Option<Vec<[f32; 3]>> = reader.read_normals().map(|n| n.collect());
-            let uv: Option<Vec<[f64; 2]>> = reader.read_tex_coords(0).map(|t| {
-                t.into_f32()
-                    .map(|u| [u[0] as f64, 1.0 - u[1] as f64])
-                    .collect()
-            }); // glTF V runs down, OBJ V runs up (trimesh flips too)
+            let uv: Option<Vec<[f64; 2]>> = reader
+                .read_tex_coords(0)
+                .map(|t| t.into_f32().map(|u| [u[0] as f64, 1.0 - u[1] as f64]).collect()); // glTF V runs down, OBJ V runs up (trimesh flips too)
             let uv = uv.filter(|u| u.len() == local_pos.len());
 
             let skinned_data = if humanoid && node.skin().is_some() {
                 match (reader.read_joints(0), reader.read_weights(0)) {
-                    (Some(j), Some(w)) => Some((
-                        j.into_u16().collect::<Vec<_>>(),
-                        w.into_f32().collect::<Vec<_>>(),
-                    )),
+                    (Some(j), Some(w)) => Some((j.into_u16().collect::<Vec<_>>(), w.into_f32().collect::<Vec<_>>())),
                     _ => None,
                 }
             } else {
@@ -507,57 +463,46 @@ pub fn load(path: &Path, humanoid: bool, ctx: &mut Ctx) -> Result<Scene> {
                 skinned_primitives += 1;
             }
 
-            let (pos, mut nrm): (Vec<V3>, Option<Vec<V3>>) =
-                if let (Some((joints, weights)), Some(skin)) = (skinned_data.as_ref(), node.skin())
-                {
-                    skinned_repositioned += 1;
-                    let jm = &skins[skin.index()];
-                    let mut pos = Vec::with_capacity(local_pos.len());
-                    let mut nrm = file_normals
-                        .as_ref()
-                        .map(|_| Vec::with_capacity(local_pos.len()));
-                    for i in 0..local_pos.len() {
-                        let p = [
-                            local_pos[i][0] as f64,
-                            local_pos[i][1] as f64,
-                            local_pos[i][2] as f64,
-                        ];
-                        let wsum: f64 = weights[i].iter().map(|w| *w as f64).sum::<f64>();
-                        let wsum = if wsum == 0.0 { 1.0 } else { wsum };
-                        let (mut acc, mut nacc) = ([0.0; 3], [0.0; 3]);
-                        for k in 0..4 {
-                            let w = weights[i][k] as f64 / wsum;
-                            if w == 0.0 {
-                                continue;
-                            }
-                            let jmat = jm.get(joints[i][k] as usize).unwrap_or(&IDENTITY);
-                            acc = add(acc, mul(transform_point(jmat, p), w));
-                            if let Some(fnorm) = &file_normals {
-                                let n =
-                                    [fnorm[i][0] as f64, fnorm[i][1] as f64, fnorm[i][2] as f64];
-                                nacc = add(nacc, mul(transform_dir(jmat, n), w));
-                            }
+            let (pos, mut nrm): (Vec<V3>, Option<Vec<V3>>) = if let (Some((joints, weights)), Some(skin)) =
+                (skinned_data.as_ref(), node.skin())
+            {
+                skinned_repositioned += 1;
+                let jm = &skins[skin.index()];
+                let mut pos = Vec::with_capacity(local_pos.len());
+                let mut nrm = file_normals.as_ref().map(|_| Vec::with_capacity(local_pos.len()));
+                for i in 0..local_pos.len() {
+                    let p = [local_pos[i][0] as f64, local_pos[i][1] as f64, local_pos[i][2] as f64];
+                    let wsum: f64 = weights[i].iter().map(|w| *w as f64).sum::<f64>();
+                    let wsum = if wsum == 0.0 { 1.0 } else { wsum };
+                    let (mut acc, mut nacc) = ([0.0; 3], [0.0; 3]);
+                    for k in 0..4 {
+                        let w = weights[i][k] as f64 / wsum;
+                        if w == 0.0 {
+                            continue;
                         }
-                        pos.push(acc);
-                        if let Some(v) = nrm.as_mut() {
-                            v.push(normalize(nacc));
+                        let jmat = jm.get(joints[i][k] as usize).unwrap_or(&IDENTITY);
+                        acc = add(acc, mul(transform_point(jmat, p), w));
+                        if let Some(fnorm) = &file_normals {
+                            let n = [fnorm[i][0] as f64, fnorm[i][1] as f64, fnorm[i][2] as f64];
+                            nacc = add(nacc, mul(transform_dir(jmat, n), w));
                         }
                     }
-                    (pos, nrm)
-                } else {
-                    let pos = local_pos
-                        .iter()
-                        .map(|p| transform_point(&m, [p[0] as f64, p[1] as f64, p[2] as f64]))
-                        .collect();
-                    let nrm = file_normals.as_ref().map(|ns| {
-                        ns.iter()
-                            .map(|n| {
-                                normalize(mul3(&nmat, [n[0] as f64, n[1] as f64, n[2] as f64]))
-                            })
-                            .collect()
-                    });
-                    (pos, nrm)
-                };
+                    pos.push(acc);
+                    if let Some(v) = nrm.as_mut() {
+                        v.push(normalize(nacc));
+                    }
+                }
+                (pos, nrm)
+            } else {
+                let pos = local_pos
+                    .iter()
+                    .map(|p| transform_point(&m, [p[0] as f64, p[1] as f64, p[2] as f64]))
+                    .collect();
+                let nrm = file_normals.as_ref().map(|ns| {
+                    ns.iter().map(|n| normalize(mul3(&nmat, [n[0] as f64, n[1] as f64, n[2] as f64]))).collect()
+                });
+                (pos, nrm)
+            };
 
             if flip && skinned_data.is_none() {
                 for t in tris.iter_mut() {

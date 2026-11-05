@@ -6,7 +6,7 @@
 //!
 //! | stage      | reused while these stay the same                                                                                   |
 //! |------------|---------------------------------------------------------------------------------------------------------------------|
-//! | `scene`    | the file (path, size, modified time) and `humanoid`: skips reading the .glb and decoding its textures              |
+//! | `scene`    | the file (path, size, modified time), `humanoid` and `emissive_mode`: skips reading the .glb and decoding its textures              |
 //! | `atlas`    | scene, `drop_transparent`, `max_tile_size`, `max_atlas_size`, `apply_base_color_factor`, `flip_normal_green`, `emissive`, `show_collision`: skips baking/packing the atlases **and PNG compression** |
 //! | `geometry` | atlas inputs plus `scale` and `write_icon`: skips UV cutting and OBJ text for the visible mesh                      |
 //! | `collision`| scene, `drop_transparent`, `collision_quality`, `vhacd_resolution`, `max_decomp_hulls`: skips VHACD (the slowest step) |
@@ -26,6 +26,7 @@ use image::RgbaImage;
 use crate::atlas::Placement;
 use crate::collision::RawHulls;
 use crate::icon::IconTri;
+use crate::options::EmissiveMode;
 use crate::report::Diagnostic;
 use crate::scene::Scene;
 
@@ -51,6 +52,7 @@ pub(crate) struct SceneKey {
     pub mtime: Option<SystemTime>,
     pub len: u64,
     pub humanoid: bool,
+    pub emissive_mode: EmissiveMode,
 }
 
 pub(crate) struct SceneEntry {
@@ -153,32 +155,16 @@ impl ConvertCache {
 
     pub(crate) fn scene(&self, k: &SceneKey) -> Option<Arc<SceneEntry>> {
         let g = self.0.lock().ok()?;
-        g.scene
-            .as_ref()
-            .filter(|(kk, _)| kk == k)
-            .map(|(_, e)| e.clone())
+        g.scene.as_ref().filter(|(kk, _)| kk == k).map(|(_, e)| e.clone())
     }
 
     /// Store a freshly loaded scene. A different scene replaces the old one and everything derived from it.
-    pub(crate) fn put_scene(
-        &self,
-        k: SceneKey,
-        scene: Scene,
-        diags: Vec<Diagnostic>,
-    ) -> Arc<SceneEntry> {
+    pub(crate) fn put_scene(&self, k: SceneKey, scene: Scene, diags: Vec<Diagnostic>) -> Arc<SceneEntry> {
         let Ok(mut g) = self.0.lock() else {
-            return Arc::new(SceneEntry {
-                id: 0,
-                scene,
-                diags,
-            });
+            return Arc::new(SceneEntry { id: 0, scene, diags });
         };
         g.next_id += 1;
-        let e = Arc::new(SceneEntry {
-            id: g.next_id,
-            scene,
-            diags,
-        });
+        let e = Arc::new(SceneEntry { id: g.next_id, scene, diags });
         g.atlas.clear();
         g.geometry.clear();
         g.hulls.clear();

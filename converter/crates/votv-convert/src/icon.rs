@@ -22,10 +22,7 @@ pub fn render(tris: &[IconTri], atlas: &RgbaImage, size: u32) -> RgbaImage {
         let z1 = -p[0] * sy + p[2] * cy;
         [x1, p[1] * cp - z1 * sp, p[1] * sp + z1 * cp]
     };
-    let vt: Vec<[V3; 3]> = tris
-        .iter()
-        .map(|t| [view(t.p[0]), view(t.p[1]), view(t.p[2])])
-        .collect();
+    let vt: Vec<[V3; 3]> = tris.iter().map(|t| [view(t.p[0]), view(t.p[1]), view(t.p[2])]).collect();
 
     let (mut mn, mut mx) = ([f64::MAX; 2], [f64::MIN; 2]);
     for t in &vt {
@@ -59,24 +56,13 @@ pub fn render(tris: &[IconTri], atlas: &RgbaImage, size: u32) -> RgbaImage {
             nrm = mul(nrm, -1.0); // two-sided
         }
         let shade = 0.42 + 0.58 * dot(nrm, light).max(0.0);
-        let area =
-            (s[1][0] - s[0][0]) * (s[2][1] - s[0][1]) - (s[2][0] - s[0][0]) * (s[1][1] - s[0][1]);
+        let area = (s[1][0] - s[0][0]) * (s[2][1] - s[0][1]) - (s[2][0] - s[0][0]) * (s[1][1] - s[0][1]);
         if area.abs() < 1e-12 {
             continue;
         }
-        let x0 = s
-            .iter()
-            .map(|p| p[0])
-            .fold(f64::MAX, f64::min)
-            .floor()
-            .max(0.0) as usize;
+        let x0 = s.iter().map(|p| p[0]).fold(f64::MAX, f64::min).floor().max(0.0) as usize;
         let x1 = (s.iter().map(|p| p[0]).fold(f64::MIN, f64::max).ceil() as usize).min(n - 1);
-        let y0 = s
-            .iter()
-            .map(|p| p[1])
-            .fold(f64::MAX, f64::min)
-            .floor()
-            .max(0.0) as usize;
+        let y0 = s.iter().map(|p| p[1]).fold(f64::MAX, f64::min).floor().max(0.0) as usize;
         let y1 = (s.iter().map(|p| p[1]).fold(f64::MIN, f64::max).ceil() as usize).min(n - 1);
         for y in y0..=y1 {
             for x in x0..=x1 {

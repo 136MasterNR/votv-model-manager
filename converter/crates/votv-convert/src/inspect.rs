@@ -54,16 +54,13 @@ pub fn inspect(input: &Path) -> Result<Inspection> {
     if !input.exists() {
         return Err(ConvertError::InputNotFound(input));
     }
-    let ext = input
-        .extension()
-        .map(|e| e.to_string_lossy().to_lowercase())
-        .unwrap_or_default();
+    let ext = input.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
     if ext != "glb" {
         return Err(ConvertError::NotGlb(format!(".{ext}")));
     }
     let hooks = Hooks::default();
     let mut ctx = Ctx::new(&hooks);
-    let sc = scene::load(&input, false, &mut ctx)?;
+    let sc = scene::load(&input, false, crate::options::EmissiveMode::Auto, &mut ctx)?;
 
     let (mut mn, mut mx) = ([f64::MAX; 3], [f64::MIN; 3]);
     let (mut tris, mut verts, mut tiled) = (0usize, 0usize, 0usize);
@@ -101,10 +98,7 @@ pub fn inspect(input: &Path) -> Result<Inspection> {
         .iter()
         .map(|m| MaterialInfo {
             name: m.name.clone(),
-            base_texture: m
-                .base_tex
-                .and_then(|i| sc.textures[i].as_ref())
-                .map(|t| t.img.dimensions()),
+            base_texture: m.base_tex.and_then(|i| sc.textures[i].as_ref()).map(|t| t.img.dimensions()),
             transparent: material_is_transparent(Some(m), &sc),
             cutout: material_transparency(Some(m), &sc) == Transparency::Cutout,
             has_emission: atlas::has_emission(m),
@@ -114,12 +108,13 @@ pub fn inspect(input: &Path) -> Result<Inspection> {
         .collect();
     let any_transparent = materials.iter().any(|m| m.transparent);
 
-    let hint = |code: DiagCode, m: String| Diagnostic {
-        severity: crate::report::Severity::Info,
-        code,
-        message: m,
-    };
+    let hint = |code: DiagCode, m: String| Diagnostic { severity: crate::report::Severity::Info, code, message: m };
     let mut hints = Vec::new();
+    for d in &ctx.diags {
+        if matches!(d.code, DiagCode::EmissiveUsedAsColour | DiagCode::EmissiveDuplicateIgnored | DiagCode::EmissiveIgnored) {
+            hints.push(d.clone());
+        }
+    }
     if sc.skin_count > 0 {
         hints.push(hint(DiagCode::Rigged, format!("This model has {} skeleton(s) and {} animation clip(s). If it is a character that appears in a T-pose, convert with humanoid mode.", sc.skin_count, sc.animation_count)));
     }
@@ -127,10 +122,7 @@ pub fn inspect(input: &Path) -> Result<Inspection> {
         hints.push(hint(DiagCode::Transparent, "Some materials are translucent (alpha blended). VotV can only clip alpha, not blend, so glass-like parts will not look right. Consider dropping transparent materials.".into()));
     }
     if tiled > 0 {
-        hints.push(hint(
-            DiagCode::TiledUvs,
-            format!("{tiled} triangles repeat a texture and will be cut into more faces."),
-        ));
+        hints.push(hint(DiagCode::TiledUvs, format!("{tiled} triangles repeat a texture and will be cut into more faces.")));
     }
     let big = size.iter().cloned().fold(0.0, f64::max);
     if big > 0.0 && (big < 0.01 || big > 50.0) {

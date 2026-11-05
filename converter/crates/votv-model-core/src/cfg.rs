@@ -23,12 +23,7 @@ impl TextureFilter {
     pub const BILINEAR: Self = Self(1);
     pub const TRILINEAR: Self = Self(2);
     pub const DEFAULT: Self = Self(3);
-    pub const ALL: [Self; 4] = [
-        Self::NEAREST,
-        Self::BILINEAR,
-        Self::TRILINEAR,
-        Self::DEFAULT,
-    ];
+    pub const ALL: [Self; 4] = [Self::NEAREST, Self::BILINEAR, Self::TRILINEAR, Self::DEFAULT];
 
     pub fn name(self) -> &'static str {
         match self.0 {
@@ -52,22 +47,8 @@ impl Default for TextureFilter {
 /// Index 8 is `food`: the game sets `edible` exactly when the material is food, and only for models that have a
 /// `UCX_` hull. Out-of-range values hit an undecoded switch default.
 pub const PHYSICAL_MATERIALS: [&str; 16] = [
-    "plastic",
-    "wood",
-    "metal",
-    "concrete",
-    "rubber",
-    "bag",
-    "metal_hollow",
-    "flesh",
-    "food",
-    "device",
-    "dirt",
-    "glass",
-    "paper",
-    "vehicle",
-    "wheel",
-    "ball",
+    "plastic", "wood", "metal", "concrete", "rubber", "bag", "metal_hollow", "flesh", "food", "device", "dirt",
+    "glass", "paper", "vehicle", "wheel", "ball",
 ];
 
 /// `physical_material` value that makes a print edible.
@@ -155,16 +136,8 @@ impl Default for PropertiesCfg {
             impact_resistance: 1.0,
             damage_resistance: 1.0,
             is_lamp: false,
-            lamp_color: Rgb {
-                r: 1.0,
-                g: 1.0,
-                b: 1.0,
-            },
-            lamp_offset: Vec3 {
-                x: 0.0,
-                y: 0.0,
-                z: 0.0,
-            },
+            lamp_color: Rgb { r: 1.0, g: 1.0, b: 1.0 },
+            lamp_offset: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
             lamp_intensity: 5001.0,
             lamp_attenuation: 2500.0,
             lamp_shadows: false,
@@ -177,11 +150,7 @@ impl Default for PropertiesCfg {
 }
 
 fn num(v: f64) -> String {
-    if v.fract() == 0.0 && v.abs() < 1e15 {
-        format!("{}", v as i64)
-    } else {
-        format!("{v:?}")
-    }
+    if v.fract() == 0.0 && v.abs() < 1e15 { format!("{}", v as i64) } else { format!("{v:?}") }
 }
 fn b(v: bool) -> u8 {
     v as u8
@@ -192,39 +161,18 @@ impl PropertiesCfg {
     /// an emissive map).
     pub fn to_cfg_string(&self, with_emissive: bool) -> String {
         let mut s = String::new();
-        s.push_str(&format!(
-            "filter_diffuse_={}\nfilter_pbr_={}\nfilter_normal_={}\nfilter_emissive_={}\n",
-            self.filter_diffuse_.0,
-            self.filter_pbr_.0,
-            self.filter_normal_.0,
-            self.filter_emissive_.0
-        ));
+        s.push_str(&format!("filter_diffuse_={}\nfilter_pbr_={}\nfilter_normal_={}\nfilter_emissive_={}\n",
+            self.filter_diffuse_.0, self.filter_pbr_.0, self.filter_normal_.0, self.filter_emissive_.0));
         s.push_str(&format!("physical_material={}\n", self.physical_material));
         if !self.indestructible {
-            s.push_str(&format!(
-                "health={}\nimpact_resistance={}\ndamage_resistance={}\n",
-                num(self.health),
-                num(self.impact_resistance),
-                num(self.damage_resistance)
-            ));
+            s.push_str(&format!("health={}\nimpact_resistance={}\ndamage_resistance={}\n",
+                num(self.health), num(self.impact_resistance), num(self.damage_resistance)));
         }
         s.push_str(&format!("is_lamp={}\n", b(self.is_lamp)));
-        s.push_str(&format!(
-            "lamp_color=(R={:?},G={:?},B={:?})\nlamp_offset=(X={:?},Y={:?},Z={:?})\n",
-            self.lamp_color.r,
-            self.lamp_color.g,
-            self.lamp_color.b,
-            self.lamp_offset.x,
-            self.lamp_offset.y,
-            self.lamp_offset.z
-        ));
-        s.push_str(&format!(
-            "lamp_intensity={}\nlamp_attenuation={}\nlamp_shadows={}\nlight_toggle={}\n",
-            num(self.lamp_intensity),
-            num(self.lamp_attenuation),
-            b(self.lamp_shadows),
-            b(self.light_toggle)
-        ));
+        s.push_str(&format!("lamp_color=(R={:?},G={:?},B={:?})\nlamp_offset=(X={:?},Y={:?},Z={:?})\n",
+            self.lamp_color.r, self.lamp_color.g, self.lamp_color.b, self.lamp_offset.x, self.lamp_offset.y, self.lamp_offset.z));
+        s.push_str(&format!("lamp_intensity={}\nlamp_attenuation={}\nlamp_shadows={}\nlight_toggle={}\n",
+            num(self.lamp_intensity), num(self.lamp_attenuation), b(self.lamp_shadows), b(self.light_toggle)));
         if with_emissive {
             s.push_str(&format!("emissive_strength={:?}\n", self.emissive_strength));
         }
@@ -248,101 +196,28 @@ impl PropertiesCfg {
                 .collect()
         };
         for line in text.lines() {
-            let Some((k, v)) = line.split_once('=') else {
-                continue;
-            };
+            let Some((k, v)) = line.split_once('=') else { continue };
             let (k, v) = (k.trim(), v.trim());
             let f = || v.parse::<f64>().ok();
             let flag = || v.parse::<f64>().ok().map(|x| x != 0.0);
             match k {
-                "filter_diffuse_" => {
-                    if let Ok(x) = v.parse() {
-                        c.filter_diffuse_ = TextureFilter(x)
-                    }
-                }
-                "filter_pbr_" => {
-                    if let Ok(x) = v.parse() {
-                        c.filter_pbr_ = TextureFilter(x)
-                    }
-                }
-                "filter_normal_" => {
-                    if let Ok(x) = v.parse() {
-                        c.filter_normal_ = TextureFilter(x)
-                    }
-                }
-                "filter_emissive_" => {
-                    if let Ok(x) = v.parse() {
-                        c.filter_emissive_ = TextureFilter(x)
-                    }
-                }
-                "physical_material" => {
-                    if let Ok(x) = v.parse::<u8>() {
-                        c.physical_material = x.min(15)
-                    }
-                }
-                "health" => {
-                    if let Some(x) = f() {
-                        c.health = x;
-                        seen_durability = true
-                    }
-                }
-                "impact_resistance" => {
-                    if let Some(x) = f() {
-                        c.impact_resistance = x;
-                        seen_durability = true
-                    }
-                }
-                "damage_resistance" => {
-                    if let Some(x) = f() {
-                        c.damage_resistance = x;
-                        seen_durability = true
-                    }
-                }
-                "is_lamp" => {
-                    if let Some(x) = flag() {
-                        c.is_lamp = x
-                    }
-                }
-                "lamp_color" => {
-                    if let [r, g, bl] = group(v)[..] {
-                        c.lamp_color = Rgb { r, g, b: bl }
-                    }
-                }
-                "lamp_offset" => {
-                    if let [x, y, z] = group(v)[..] {
-                        c.lamp_offset = Vec3 { x, y, z }
-                    }
-                }
-                "lamp_intensity" => {
-                    if let Some(x) = f() {
-                        c.lamp_intensity = x
-                    }
-                }
-                "lamp_attenuation" => {
-                    if let Some(x) = f() {
-                        c.lamp_attenuation = x
-                    }
-                }
-                "lamp_shadows" => {
-                    if let Some(x) = flag() {
-                        c.lamp_shadows = x
-                    }
-                }
-                "light_toggle" => {
-                    if let Some(x) = flag() {
-                        c.light_toggle = x
-                    }
-                }
-                "emissive_strength" => {
-                    if let Some(x) = f() {
-                        c.emissive_strength = x
-                    }
-                }
-                "explotano" => {
-                    if let Some(x) = f() {
-                        c.explotano = Some(x)
-                    }
-                }
+                "filter_diffuse_" => if let Ok(x) = v.parse() { c.filter_diffuse_ = TextureFilter(x) },
+                "filter_pbr_" => if let Ok(x) = v.parse() { c.filter_pbr_ = TextureFilter(x) },
+                "filter_normal_" => if let Ok(x) = v.parse() { c.filter_normal_ = TextureFilter(x) },
+                "filter_emissive_" => if let Ok(x) = v.parse() { c.filter_emissive_ = TextureFilter(x) },
+                "physical_material" => if let Ok(x) = v.parse::<u8>() { c.physical_material = x.min(15) },
+                "health" => if let Some(x) = f() { c.health = x; seen_durability = true },
+                "impact_resistance" => if let Some(x) = f() { c.impact_resistance = x; seen_durability = true },
+                "damage_resistance" => if let Some(x) = f() { c.damage_resistance = x; seen_durability = true },
+                "is_lamp" => if let Some(x) = flag() { c.is_lamp = x },
+                "lamp_color" => if let [r, g, bl] = group(v)[..] { c.lamp_color = Rgb { r, g, b: bl } },
+                "lamp_offset" => if let [x, y, z] = group(v)[..] { c.lamp_offset = Vec3 { x, y, z } },
+                "lamp_intensity" => if let Some(x) = f() { c.lamp_intensity = x },
+                "lamp_attenuation" => if let Some(x) = f() { c.lamp_attenuation = x },
+                "lamp_shadows" => if let Some(x) = flag() { c.lamp_shadows = x },
+                "light_toggle" => if let Some(x) = flag() { c.light_toggle = x },
+                "emissive_strength" => if let Some(x) = f() { c.emissive_strength = x },
+                "explotano" => if let Some(x) = f() { c.explotano = Some(x) },
                 _ => {
                     if !k.is_empty() {
                         c.extra.insert(k.to_string(), v.to_string());
@@ -368,9 +243,7 @@ impl PropertiesCfg {
             ("filter_emissive_", self.filter_emissive_),
         ] {
             if f.0 > 3 {
-                return Err(format!(
-                    "{k} must be 0-3 (Nearest, Bilinear, Trilinear, Default)"
-                ));
+                return Err(format!("{k} must be 0-3 (Nearest, Bilinear, Trilinear, Default)"));
             }
         }
         let numbers = [
@@ -393,11 +266,7 @@ impl PropertiesCfg {
                 return Err(format!("{k} must be a finite number"));
             }
         }
-        for (k, v) in [
-            ("lamp_intensity", self.lamp_intensity),
-            ("lamp_attenuation", self.lamp_attenuation),
-            ("emissive_strength", self.emissive_strength),
-        ] {
+        for (k, v) in [("lamp_intensity", self.lamp_intensity), ("lamp_attenuation", self.lamp_attenuation), ("emissive_strength", self.emissive_strength)] {
             if v < 0.0 {
                 return Err(format!("{k} cannot be negative"));
             }
@@ -406,13 +275,8 @@ impl PropertiesCfg {
             if k.is_empty() || k.contains(['=', '\n', '\r']) || v.contains(['\n', '\r']) {
                 return Err(format!("extra line {k:?} is not a valid key=value pair"));
             }
-            if crate::schema::PROPERTY_SPECS
-                .iter()
-                .any(|s| s.key == k.as_str())
-            {
-                return Err(format!(
-                    "{k} is a known property; set it through its own field, not `extra`"
-                ));
+            if crate::schema::PROPERTY_SPECS.iter().any(|s| s.key == k.as_str()) {
+                return Err(format!("{k} is a known property; set it through its own field, not `extra`"));
             }
         }
         Ok(())
@@ -446,6 +310,7 @@ pub fn auto_health(size: [f64; 3]) -> f64 {
     max * min / 5.0
 }
 
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -466,10 +331,7 @@ lamp_offset=(X=0.0,Y=0.0,Z=0.0)\nlamp_intensity=5001\nlamp_attenuation=2500\nlam
         assert!(PropertiesCfg::default().indestructible);
         let text = PropertiesCfg::default().to_cfg_string(true);
         for key in ["health=", "impact_resistance=", "damage_resistance="] {
-            assert!(
-                !text.contains(key),
-                "{key} must be absent when indestructible"
-            );
+            assert!(!text.contains(key), "{key} must be absent when indestructible");
         }
     }
 
@@ -486,11 +348,7 @@ lamp_offset=(X=0.0,Y=0.0,Z=0.0)\nlamp_intensity=5001\nlamp_attenuation=2500\nlam
         let mut c = PropertiesCfg::default();
         c.indestructible = true;
         let text = c.to_cfg_string(true);
-        assert!(
-            !text.contains("health=")
-                && !text.contains("impact_resistance=")
-                && !text.contains("damage_resistance=")
-        );
+        assert!(!text.contains("health=") && !text.contains("impact_resistance=") && !text.contains("damage_resistance="));
         assert!(PropertiesCfg::parse(&text).indestructible);
         let mut breakable = PropertiesCfg::default();
         breakable.indestructible = false;
@@ -502,11 +360,7 @@ lamp_offset=(X=0.0,Y=0.0,Z=0.0)\nlamp_intensity=5001\nlamp_attenuation=2500\nlam
         let mut c = PropertiesCfg::default();
         c.physical_material = 8;
         c.is_lamp = true;
-        c.lamp_color = Rgb {
-            r: 0.5,
-            g: 0.25,
-            b: 1.0,
-        };
+        c.lamp_color = Rgb { r: 0.5, g: 0.25, b: 1.0 };
         c.emissive_strength = 2.5;
         assert_eq!(PropertiesCfg::parse(&c.to_cfg_string(true)), c);
     }

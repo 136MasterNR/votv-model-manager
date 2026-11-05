@@ -13,11 +13,7 @@ pub fn sanitize_name(name: &str) -> String {
     let mut s = String::new();
     let mut last_us = false;
     for ch in name.trim().to_lowercase().chars() {
-        let c = if ch.is_ascii_lowercase() || ch.is_ascii_digit() {
-            ch
-        } else {
-            '_'
-        };
+        let c = if ch.is_ascii_lowercase() || ch.is_ascii_digit() { ch } else { '_' };
         if c == '_' {
             if !last_us {
                 s.push('_');
@@ -29,11 +25,7 @@ pub fn sanitize_name(name: &str) -> String {
         }
     }
     let s = s.trim_matches('_').to_string();
-    if s.is_empty() {
-        "model".to_string()
-    } else {
-        s
-    }
+    if s.is_empty() { "model".to_string() } else { s }
 }
 
 /// True when an object/node name denotes collision (`UCX_` prefix, any case, surrounding spaces ignored).
@@ -69,11 +61,7 @@ fn ucx_object_name_raw(name: &str) -> String {
         }
     }
     let s = s.trim_matches('_').to_string();
-    if s.is_empty() {
-        "UCX_collision".to_string()
-    } else {
-        s
-    }
+    if s.is_empty() { "UCX_collision".to_string() } else { s }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -114,9 +102,6 @@ mod tests {
         assert_eq!(ucx_object_name("UCX_my box"), "UCX_my_box");
         assert_eq!(ucx_object_name("ucx_Box"), "UCX_Box");
         assert_eq!(ucx_object_name(" Ucx_a-b "), "UCX_a_b");
-        assert_eq!(
-            texture_file_name(TextureKind::Normal, "chair"),
-            "normal_chair.png"
-        );
+        assert_eq!(texture_file_name(TextureKind::Normal, "chair"), "normal_chair.png");
     }
 }

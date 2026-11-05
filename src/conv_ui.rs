@@ -2675,9 +2675,9 @@ pub fn conv_ui_system(
         &mut texts,
         Some(refs.regen_text),
         if pipe.regen_busy() {
-            "Regenerating..."
+            "Generating..."
         } else {
-            "Regenerate icon"
+            "Capture as icon"
         }
         .to_string(),
     );

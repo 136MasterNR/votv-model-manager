@@ -28,8 +28,6 @@ pub use cache::ConvertCache;
 pub use convert::{convert, convert_with, sanitize_name};
 pub use error::{ConvertError, Result};
 pub use inspect::{inspect, Inspection, MaterialInfo};
-pub use options::{CollisionQuality, ConvertOptions, Options, OverwritePolicy};
-pub use report::{
-    CancelToken, DiagCode, Diagnostic, Hooks, OutputFile, Progress, Report, Severity, Stage, Stats,
-};
+pub use options::{CollisionQuality, ConvertOptions, EmissiveMode, Options, OverwritePolicy};
+pub use report::{CancelToken, DiagCode, Diagnostic, Hooks, OutputFile, Progress, Report, Severity, Stage, Stats};
 pub use votv_model_core as model_core;

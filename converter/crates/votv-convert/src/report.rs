@@ -64,6 +64,10 @@ pub enum DiagCode {
     OddSize,
     SpecGlossConverted,
     AlphaCutout,
+    EmissiveUsedAsColour,
+    EmissiveDuplicateIgnored,
+    EmissiveIgnored,
+    OutlineDropped,
     UnsupportedExtensionIgnored,
 }
 
@@ -109,6 +113,10 @@ impl DiagCode {
             Self::OddSize => "odd_size",
             Self::SpecGlossConverted => "spec_gloss_converted",
             Self::AlphaCutout => "alpha_cutout",
+            Self::EmissiveUsedAsColour => "emissive_used_as_colour",
+            Self::EmissiveDuplicateIgnored => "emissive_duplicate_ignored",
+            Self::EmissiveIgnored => "emissive_ignored",
+            Self::OutlineDropped => "outline_dropped",
             Self::UnsupportedExtensionIgnored => "unsupported_extension_ignored",
         }
     }
@@ -186,14 +194,10 @@ pub struct Report {
 
 impl Report {
     pub fn warnings(&self) -> impl Iterator<Item = &Diagnostic> {
-        self.diagnostics
-            .iter()
-            .filter(|d| d.severity != Severity::Info)
+        self.diagnostics.iter().filter(|d| d.severity != Severity::Info)
     }
     pub fn has_attention(&self) -> bool {
-        self.diagnostics
-            .iter()
-            .any(|d| d.severity == Severity::Attention)
+        self.diagnostics.iter().any(|d| d.severity == Severity::Attention)
     }
 }
 
@@ -282,18 +286,10 @@ pub(crate) struct Ctx<'a> {
 
 impl<'a> Ctx<'a> {
     pub fn new(hooks: &'a Hooks) -> Self {
-        Self {
-            hooks,
-            diags: Vec::new(),
-            cache_hits: Vec::new(),
-        }
+        Self { hooks, diags: Vec::new(), cache_hits: Vec::new() }
     }
     pub fn emit(&mut self, severity: Severity, code: DiagCode, message: impl Into<String>) {
-        let d = Diagnostic {
-            severity,
-            code,
-            message: message.into(),
-        };
+        let d = Diagnostic { severity, code, message: message.into() };
         if let Some(f) = &self.hooks.on_diagnostic {
             f(&d);
         }
@@ -316,11 +312,7 @@ impl<'a> Ctx<'a> {
     }
     pub fn progress(&self, stage: Stage, fraction: f32, message: impl Into<String>) {
         if let Some(f) = &self.hooks.on_progress {
-            f(&Progress {
-                stage,
-                fraction: fraction.clamp(0.0, 1.0),
-                message: message.into(),
-            });
+            f(&Progress { stage, fraction: fraction.clamp(0.0, 1.0), message: message.into() });
         }
     }
     pub fn check_cancel(&self) -> crate::error::Result<()> {

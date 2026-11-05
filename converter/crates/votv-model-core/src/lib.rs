@@ -8,14 +8,9 @@
 //! parses) is not modelled because its key name is still unknown.
 
 pub mod cfg;
-pub mod naming;
 pub mod schema;
+pub mod naming;
 
-pub use cfg::{
-    auto_health, bites_for, PropertiesCfg, Rgb, TextureFilter, Vec3, PHYSICAL_MATERIALS,
-    PHYSICAL_MATERIAL_FOOD,
-};
-pub use naming::{
-    is_ucx_name, sanitize_name, texture_file_name, ucx_object_name, TextureKind, UCX_PREFIX,
-};
+pub use cfg::{auto_health, bites_for, PropertiesCfg, Rgb, TextureFilter, Vec3, PHYSICAL_MATERIALS, PHYSICAL_MATERIAL_FOOD};
 pub use schema::{Confidence, Group, Kind, PropValue, PropertySpec, PROPERTY_SPECS};
+pub use naming::{is_ucx_name, sanitize_name, texture_file_name, ucx_object_name, TextureKind, UCX_PREFIX};

@@ -4,50 +4,20 @@ pub type V3 = [f64; 3];
 /// Row-major 4x4: `m[row][col]`, column vectors (`p' = M * p`).
 pub type M4 = [[f64; 4]; 4];
 
-pub const IDENTITY: M4 = [
-    [1.0, 0.0, 0.0, 0.0],
-    [0.0, 1.0, 0.0, 0.0],
-    [0.0, 0.0, 1.0, 0.0],
-    [0.0, 0.0, 0.0, 1.0],
-];
+pub const IDENTITY: M4 = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]];
 
-#[inline]
-pub fn add(a: V3, b: V3) -> V3 {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+#[inline] pub fn add(a: V3, b: V3) -> V3 { [a[0] + b[0], a[1] + b[1], a[2] + b[2]] }
+#[inline] pub fn sub(a: V3, b: V3) -> V3 { [a[0] - b[0], a[1] - b[1], a[2] - b[2]] }
+#[inline] pub fn mul(a: V3, s: f64) -> V3 { [a[0] * s, a[1] * s, a[2] * s] }
+#[inline] pub fn dot(a: V3, b: V3) -> f64 { a[0] * b[0] + a[1] * b[1] + a[2] * b[2] }
+#[inline] pub fn cross(a: V3, b: V3) -> V3 {
+    [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
 }
-#[inline]
-pub fn sub(a: V3, b: V3) -> V3 {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-#[inline]
-pub fn mul(a: V3, s: f64) -> V3 {
-    [a[0] * s, a[1] * s, a[2] * s]
-}
-#[inline]
-pub fn dot(a: V3, b: V3) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-#[inline]
-pub fn cross(a: V3, b: V3) -> V3 {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-#[inline]
-pub fn len(a: V3) -> f64 {
-    dot(a, a).sqrt()
-}
+#[inline] pub fn len(a: V3) -> f64 { dot(a, a).sqrt() }
 /// Unit vector, or `a` unchanged when it has no length.
-#[inline]
-pub fn normalize(a: V3) -> V3 {
+#[inline] pub fn normalize(a: V3) -> V3 {
     let l = len(a);
-    if l > 1e-12 {
-        mul(a, 1.0 / l)
-    } else {
-        a
-    }
+    if l > 1e-12 { mul(a, 1.0 / l) } else { a }
 }
 
 pub fn mat_mul(a: &M4, b: &M4) -> M4 {

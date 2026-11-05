@@ -4,14 +4,10 @@ use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
 
 use clap::Parser;
-use votv_convert::{CollisionQuality, ConvertOptions, Hooks, OverwritePolicy, Severity};
+use votv_convert::{CollisionQuality, ConvertOptions, EmissiveMode, Hooks, OverwritePolicy, Severity};
 
 #[derive(Parser)]
-#[command(
-    name = "votv-convert",
-    version,
-    about = "Convert a GLB into a VotV 3D Printer style folder."
-)]
+#[command(name = "votv-convert", version, about = "Convert a GLB into a VotV 3D Printer style folder.")]
 struct Cli {
     /// model file, .glb assumed if no extension
     input: PathBuf,
@@ -58,6 +54,12 @@ struct Cli {
     /// VHACD voxel resolution per axis
     #[arg(long, default_value_t = 64)]
     vhacd_resolution: u32,
+    /// follow the file's emissive data literally (no toon-shader detection)
+    #[arg(long)]
+    literal_emissive: bool,
+    /// keep parts named *outline* (toon outline shells)
+    #[arg(long)]
+    keep_outlines: bool,
     /// don't bake an emissive atlas
     #[arg(long)]
     no_emissive: bool,
@@ -125,24 +127,14 @@ fn pause() {
 
 fn main() {
     let color = std::io::stdout().is_terminal();
-    let paint = move |code: &str, s: &str| {
-        if color {
-            format!("\x1b[{code}m{s}\x1b[0m")
-        } else {
-            s.to_string()
-        }
-    };
+    let paint = move |code: &str, s: &str| if color { format!("\x1b[{code}m{s}\x1b[0m") } else { s.to_string() };
 
     let cli = Cli::parse();
     let (out_dir, out_name) = match &cli.output {
         None => (PathBuf::from("."), None),
         Some(p) => {
             let name = p.file_name().map(|s| s.to_string_lossy().to_string());
-            let dir = p
-                .parent()
-                .filter(|d| !d.as_os_str().is_empty())
-                .map(|d| d.to_path_buf())
-                .unwrap_or_else(|| PathBuf::from("."));
+            let dir = p.parent().filter(|d| !d.as_os_str().is_empty()).map(|d| d.to_path_buf()).unwrap_or_else(|| PathBuf::from("."));
             (dir, name)
         }
     };
@@ -150,11 +142,7 @@ fn main() {
     let mut opts = ConvertOptions {
         output_dir: out_dir,
         output_name: out_name,
-        overwrite: match cli.overwrite {
-            Overwrite::Replace => OverwritePolicy::Replace,
-            Overwrite::Fail => OverwritePolicy::Fail,
-            Overwrite::Rename => OverwritePolicy::Rename,
-        },
+        overwrite: match cli.overwrite { Overwrite::Replace => OverwritePolicy::Replace, Overwrite::Fail => OverwritePolicy::Fail, Overwrite::Rename => OverwritePolicy::Rename },
         keep_existing_properties: !cli.no_keep_properties,
         write_sidecar: cli.sidecar,
         write_icon: cli.icon,
@@ -166,10 +154,7 @@ fn main() {
         drop_transparent: cli.no_transparent,
         generate_collision: !cli.no_coll,
         force_generate_collision: cli.force_generate_coll,
-        collision_quality: match cli.coll_quality {
-            Quality::Low => CollisionQuality::Low,
-            Quality::High => CollisionQuality::High,
-        },
+        collision_quality: match cli.coll_quality { Quality::Low => CollisionQuality::Low, Quality::High => CollisionQuality::High },
         max_hull_faces: cli.max_hull_faces,
         max_decomp_hulls: cli.max_decomp_hulls,
         vhacd_resolution: cli.vhacd_resolution,
@@ -181,6 +166,8 @@ fn main() {
         emissive: !cli.no_emissive,
         flip_normal_green: !cli.no_flip_normal_green,
         apply_base_color_factor: cli.apply_base_color_factor,
+        emissive_mode: if cli.literal_emissive { EmissiveMode::Literal } else { EmissiveMode::Auto },
+        drop_outline_parts: !cli.keep_outlines,
         ..Default::default()
     };
     opts.properties.physical_material = cli.physical_material;
@@ -197,22 +184,13 @@ fn main() {
         Severity::Warning => println!("\x1b[93m[warning] {}\x1b[0m", d.message),
         Severity::Attention => {
             a2.store(true, std::sync::atomic::Ordering::Relaxed);
-            println!(
-                "\x1b[91m\x1b[1m[warning]\x1b[0m\x1b[91m {}\x1b[0m",
-                d.message
-            )
+            println!("\x1b[91m\x1b[1m[warning]\x1b[0m\x1b[91m {}\x1b[0m", d.message)
         }
     });
 
     match votv_convert::convert_with(&opts, &cli.input, &hooks) {
         Ok(r) => {
-            println!(
-                "{}",
-                paint(
-                    "92",
-                    &format!("[success] Your VotV model is in: {}", r.model_dir.display())
-                )
-            );
+            println!("{}", paint("92", &format!("[success] Your VotV model is in: {}", r.model_dir.display())));
             for f in &r.files {
                 println!("  {}  ({:.1} KB)", f.name, f.bytes as f64 / 1024.0);
             }

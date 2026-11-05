@@ -12,10 +12,7 @@ fn lerp(a: &Corner, b: &Corner, t: f64) -> Corner {
     (
         add(a.0, mul(sub(b.0, a.0), t)),
         add(a.1, mul(sub(b.1, a.1), t)),
-        [
-            a.2[0] + (b.2[0] - a.2[0]) * t,
-            a.2[1] + (b.2[1] - a.2[1]) * t,
-        ],
+        [a.2[0] + (b.2[0] - a.2[0]) * t, a.2[1] + (b.2[1] - a.2[1]) * t],
     )
 }
 
@@ -89,46 +86,23 @@ pub struct PartGeom {
 }
 
 /// `verts` are already scaled. `uvs` is `Some` only for parts with a real base-colour texture.
-pub fn build_part(
-    verts: &[V3],
-    nrms: &[V3],
-    tris: &[[u32; 3]],
-    uvs: Option<&[[f64; 2]]>,
-) -> PartGeom {
-    let mut g = PartGeom {
-        verts: verts.to_vec(),
-        nrms: nrms.to_vec(),
-        faces: Vec::new(),
-        split: 0,
-        unsplit: 0,
-    };
+pub fn build_part(verts: &[V3], nrms: &[V3], tris: &[[u32; 3]], uvs: Option<&[[f64; 2]]>) -> PartGeom {
+    let mut g = PartGeom { verts: verts.to_vec(), nrms: nrms.to_vec(), faces: Vec::new(), split: 0, unsplit: 0 };
     let Some(uv) = uvs else {
         for t in tris {
-            g.faces.push(FaceRec {
-                idx: [t[0] as usize, t[1] as usize, t[2] as usize],
-                uv: None,
-            });
+            g.faces.push(FaceRec { idx: [t[0] as usize, t[1] as usize, t[2] as usize], uv: None });
         }
         return g;
     };
     for t in tris {
         let ti = [t[0] as usize, t[1] as usize, t[2] as usize];
         let fu = [uv[ti[0]], uv[ti[1]], uv[ti[2]]];
-        let mn = [
-            fu.iter().map(|u| u[0]).fold(f64::MAX, f64::min),
-            fu.iter().map(|u| u[1]).fold(f64::MAX, f64::min),
-        ];
-        let mx = [
-            fu.iter().map(|u| u[0]).fold(f64::MIN, f64::max),
-            fu.iter().map(|u| u[1]).fold(f64::MIN, f64::max),
-        ];
+        let mn = [fu.iter().map(|u| u[0]).fold(f64::MAX, f64::min), fu.iter().map(|u| u[1]).fold(f64::MAX, f64::min)];
+        let mx = [fu.iter().map(|u| u[0]).fold(f64::MIN, f64::max), fu.iter().map(|u| u[1]).fold(f64::MIN, f64::max)];
         let cell = [(mn[0] + 1e-9).floor(), (mn[1] + 1e-9).floor()];
         if mx[0] <= cell[0] + 1.0 + 1e-9 && mx[1] <= cell[1] + 1.0 + 1e-9 {
             let loc = [0, 1, 2].map(|k| [fu[k][0] - cell[0], fu[k][1] - cell[1]]);
-            g.faces.push(FaceRec {
-                idx: ti,
-                uv: Some(loc),
-            });
+            g.faces.push(FaceRec { idx: ti, uv: Some(loc) });
             continue;
         }
         let nx = (mx[0] - 1e-9).floor() - (mn[0] + 1e-9).floor() + 1.0;
@@ -136,24 +110,12 @@ pub fn build_part(
         if (nx * ny) as i64 > MAX_UV_CELLS_PER_FACE {
             // absurdly dense tiling: don't explode the face count, squeeze this one face into a tile
             g.unsplit += 1;
-            let loc = [0, 1, 2].map(|k| {
-                [
-                    (fu[k][0] - cell[0]).clamp(0.0, 1.0),
-                    (fu[k][1] - cell[1]).clamp(0.0, 1.0),
-                ]
-            });
-            g.faces.push(FaceRec {
-                idx: ti,
-                uv: Some(loc),
-            });
+            let loc = [0, 1, 2].map(|k| [(fu[k][0] - cell[0]).clamp(0.0, 1.0), (fu[k][1] - cell[1]).clamp(0.0, 1.0)]);
+            g.faces.push(FaceRec { idx: ti, uv: Some(loc) });
             continue;
         }
         g.split += 1;
-        let pieces = split_tri(
-            [verts[ti[0]], verts[ti[1]], verts[ti[2]]],
-            [nrms[ti[0]], nrms[ti[1]], nrms[ti[2]]],
-            fu,
-        );
+        let pieces = split_tri([verts[ti[0]], verts[ti[1]], verts[ti[2]]], [nrms[ti[0]], nrms[ti[1]], nrms[ti[2]]], fu);
         for pc in pieces {
             let cen = [
                 pc.iter().map(|c| c.2[0]).sum::<f64>() / pc.len() as f64,
@@ -164,26 +126,15 @@ pub fn build_part(
             for (p, n, u) in &pc {
                 g.verts.push(*p);
                 g.nrms.push(normalize(*n));
-                idxs.push((
-                    g.verts.len() - 1,
-                    [
-                        (u[0] - pcell[0]).clamp(0.0, 1.0),
-                        (u[1] - pcell[1]).clamp(0.0, 1.0),
-                    ],
-                ));
+                idxs.push((g.verts.len() - 1, [(u[0] - pcell[0]).clamp(0.0, 1.0), (u[1] - pcell[1]).clamp(0.0, 1.0)]));
             }
             for k in 1..idxs.len() - 1 {
                 let (a, b, c) = (idxs[0], idxs[k], idxs[k + 1]);
-                let area = ((b.1[0] - a.1[0]) * (c.1[1] - a.1[1])
-                    - (c.1[0] - a.1[0]) * (b.1[1] - a.1[1]))
-                    .abs();
+                let area = ((b.1[0] - a.1[0]) * (c.1[1] - a.1[1]) - (c.1[0] - a.1[0]) * (b.1[1] - a.1[1])).abs();
                 if area < 1e-10 {
                     continue;
                 }
-                g.faces.push(FaceRec {
-                    idx: [a.0, b.0, c.0],
-                    uv: Some([a.1, b.1, c.1]),
-                });
+                g.faces.push(FaceRec { idx: [a.0, b.0, c.0], uv: Some([a.1, b.1, c.1]) });
             }
         }
     }

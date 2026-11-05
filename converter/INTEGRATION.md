@@ -41,6 +41,11 @@ Never prints, prompts or exits. `ConvertError::kind()` is a stable tag; `Display
 - `properties.indestructible` (default **true**) writes a cfg without `health`, `impact_resistance` and `damage_resistance`, which makes the model indestructible in game (observed, not decoded; any of the three present makes it breakable).
   Suggested UI: a checkbox, on by default, that disables the health slider; unticking it writes `properties.health`.
 
+## Emission, alpha and outlines (conversion options)
+`emissive_mode` (Auto / Literal) and `drop_outline_parts` are ordinary conversion options (checkbox / dropdown). Auto is right for almost every model; Literal is the escape hatch
+if a real glow map is wrongly reinterpreted. Their effects appear as `Info` diagnostics (`emissive_used_as_colour`, `emissive_duplicate_ignored`, `emissive_ignored`,
+`outline_dropped`, `alpha_cutout`), which the GUI can show in its log. `inspect()` lists the emission ones in `hints` so the panel can explain them before converting.
+
 ## Properties panel (generated from the schema)
 Conversion settings (`Options`) and model properties (`Options.properties`, type `votv_model_core::PropertiesCfg`) are separate. The GUI should show them in
 separate sections. Build the properties section from the schema instead of one hand-written row per field:
