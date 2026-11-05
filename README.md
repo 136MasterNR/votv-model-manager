@@ -99,6 +99,8 @@ cargo run --features bevy/dynamic_linking
 
 The build number in the title bar is the GitHub Actions run number (`GITHUB_RUN_NUMBER`, passed in by `build.rs`); a local build has none, so nothing is shown.
 
+Icons come from Google's Material Icons font plus a tiny Material Symbols subset (both Apache-2.0); see `docs/icon-fonts.md`.
+
 More technical notes are in `docs/` and `converter/README.md`.
 
 ## Disclure

@@ -1,6 +1,12 @@
 //! Icons from the Material Icons font (`assets/fonts/MaterialIcons-Regular.ttf`, Apache-2.0, from Google Fonts / the
 //! material-design-icons repository). Material Symbols uses the same code points for these icons.
 //!
+//! A few icons only exist in the newer Material Symbols family (e.g. `reset_image`): those come from
+//! `assets/fonts/MaterialSymbols-subset.ttf`, a 1.4 KB static copy (FILL 0, GRAD 0, opsz 24, wght 400) of Material
+//! Symbols Outlined cut down to just those glyphs with fontTools (Apache-2.0, google/material-design-icons). A `Glyph`
+//! says which of the two fonts it lives in (`symbols`). To add another Symbols icon, add its code point to the subset
+//! (see `docs/icon-fonts.md`) and a constant built with `gs()`.
+//!
 //! The font file is compiled into the executable (`include_bytes!`), so a standalone release exe needs no `assets`
 //! folder. It is registered as a font asset at startup (`IconFont::new`).
 //!
@@ -15,23 +21,40 @@ use bevy::{prelude::*, text::LineBreak};
 
 /// The icon font, embedded in the executable.
 pub const ICON_FONT_BYTES: &[u8] = include_bytes!("../assets/fonts/MaterialIcons-Regular.ttf");
+/// The Material Symbols subset (only the glyphs listed in `g` built with `gs`), embedded in the executable.
+pub const SYMBOLS_FONT_BYTES: &[u8] = include_bytes!("../assets/fonts/MaterialSymbols-subset.ttf");
 
 #[derive(Clone, Copy)]
 pub struct Glyph {
     pub ch: char,
     /// Shown when the font is unusable. Empty for every icon except the close button.
     pub fallback: &'static str,
+    /// The glyph is in the Material Symbols subset instead of the Material Icons font.
+    pub symbols: bool,
 }
 
 /// Code points of the icons in use (Material Icons names in the comments).
 pub mod g {
     use super::Glyph;
     const fn gl(ch: char) -> Glyph {
-        Glyph { ch, fallback: "" }
+        Glyph {
+            ch,
+            fallback: "",
+            symbols: false,
+        }
+    }
+    /// A glyph of the Material Symbols subset.
+    const fn gs(ch: char) -> Glyph {
+        Glyph {
+            ch,
+            fallback: "",
+            symbols: true,
+        }
     }
     pub const CLOSE: Glyph = Glyph {
         ch: '\u{e5cd}',
         fallback: "X",
+        symbols: false,
     }; // close; the only icon with a plain-text stand-in
     pub const EXPAND_MORE: Glyph = gl('\u{e5cf}'); // expand_more
     pub const EXPAND_LESS: Glyph = gl('\u{e5ce}'); // expand_less
@@ -45,6 +68,7 @@ pub mod g {
     pub const DELETE: Glyph = gl('\u{e872}'); // delete
     pub const FILE_UPLOAD: Glyph = gl('\u{e2c6}'); // file_upload (arrow out of a tray): export
     pub const LAUNCH: Glyph = gl('\u{e895}'); // launch (arrow out of a box): opens another program
+    pub const RESET_IMAGE: Glyph = gs('\u{f824}'); // reset_image (Material Symbols): regenerate icon
     pub const RESTART_ALT: Glyph = gl('\u{e8ba}'); // restart_alt (circular arrow): reset to the default
     pub const EDIT: Glyph = gl('\u{e3c9}'); // edit
     pub const SEARCH: Glyph = gl('\u{e8b6}'); // search
@@ -69,6 +93,8 @@ pub enum IconState {
 #[derive(Resource)]
 pub struct IconFont {
     pub handle: Handle<Font>,
+    /// The Material Symbols subset (`Glyph::symbols`); the main font's handle if it could not be loaded.
+    pub symbols: Handle<Font>,
     pub state: IconState,
 }
 
@@ -76,16 +102,28 @@ impl IconFont {
     /// Registers the embedded font with Bevy.
     pub fn new(fonts: &mut Assets<Font>) -> Self {
         match Font::try_from_bytes(ICON_FONT_BYTES.to_vec()) {
-            Ok(font) => Self {
-                handle: fonts.add(font),
-                state: IconState::Ready,
-            },
+            Ok(font) => {
+                let handle = fonts.add(font);
+                let symbols = match Font::try_from_bytes(SYMBOLS_FONT_BYTES.to_vec()) {
+                    Ok(f) => fonts.add(f),
+                    Err(_) => {
+                        eprintln!("[icons] the embedded Material Symbols subset could not be loaded");
+                        handle.clone()
+                    }
+                };
+                Self {
+                    handle,
+                    symbols,
+                    state: IconState::Ready,
+                }
+            }
             Err(_) => {
                 eprintln!(
                     "[icons] the embedded icon font could not be loaded; icons will be empty"
                 );
                 Self {
                     handle: Handle::default(),
+                    symbols: Handle::default(),
                     state: IconState::Missing,
                 }
             }
@@ -99,9 +137,11 @@ impl IconFont {
             g.ch.to_string()
         }
     }
-    fn font(&self) -> Handle<Font> {
+    fn font(&self, g: Glyph) -> Handle<Font> {
         if self.state == IconState::Missing {
             Handle::default()
+        } else if g.symbols {
+            self.symbols.clone()
         } else {
             self.handle.clone()
         }
@@ -113,7 +153,7 @@ pub fn icon(font: &IconFont, g: Glyph, size: f32, color: Color) -> impl Bundle {
     (
         Text::new(font.text(g)),
         TextFont {
-            font: font.font(),
+            font: font.font(g),
             font_size: size,
             ..default()
         },

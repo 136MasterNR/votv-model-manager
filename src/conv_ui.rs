@@ -33,7 +33,7 @@ use crate::preview::{PreviewCamera, StudioLight, ThumbLight};
 use crate::scene::Opts;
 use crate::textedit::{field_drag, field_out, field_over, press, shift_down, Editing, Field, Geom};
 use crate::ui::{
-    button, child, pass, pointer_cursor, scroll_metrics, set_cursor, thumb_height, txt, ItemButton, UiRefs, ACCENT,
+    button, child, pass, pointer_cursor, scroll_metrics, set_cursor, thumb_height, txt, ItemButton, ACCENT,
     BAR, BTN, DIM, EDGE, EDGE_HOVER, EXPORT_COL, ICON_BG, ITEM, PANEL, TEXT,
 };
 use crate::{Layout, Library};
@@ -545,58 +545,52 @@ pub struct RowRefs {
     pub reset: Option<Entity>,
 }
 
-/// The small "reset to default" button of a parameter row: a circular-arrow icon button. It is hidden while the value
-/// is the default (`reset_button_system`; hidden keeps its room, so nothing jumps while a slider moves). A click puts
-/// the default value back and must not reach the row (a toggle would flip, a dropdown would open).
-fn spawn_reset(
-    commands: &mut Commands,
-    parent: Entity,
-    font: &IconFont,
-    i: usize,
-    push_right: bool,
-) -> Entity {
+/// Room kept free at the right end of every parameter row for the reset button (so nothing moves when it appears).
+const RESET_GUTTER: f32 = 30.0;
+
+/// The "reset to default" button of a parameter row: just a floating circular-arrow icon (no background) in the right
+/// gutter of the row, so it takes no room in the row's layout. It is hidden while the value is the default
+/// (`reset_button_system`). A click puts the default value back and must not reach the row (a toggle would flip, a
+/// dropdown would open). `top` is the offset from the row's top (rows differ in height).
+fn spawn_reset(commands: &mut Commands, parent: Entity, font: &IconFont, i: usize, top: f32) -> Entity {
     let b = child(
         commands,
         parent,
         (
-            Button,
-            ItemButton,
+            Interaction::default(),
             Node {
+                position_type: PositionType::Absolute,
+                right: Val::Px(5.0),
+                top: Val::Px(top),
                 width: Val::Px(22.0),
                 height: Val::Px(22.0),
-                flex_shrink: 0.0,
                 justify_content: JustifyContent::Center,
                 align_items: AlignItems::Center,
-                margin: if push_right {
-                    UiRect::left(Val::Auto)
-                } else {
-                    UiRect::ZERO
-                },
                 ..default()
             },
-            BackgroundColor(ITEM),
-            BorderRadius::all(Val::Px(3.0)),
             Visibility::Hidden,
         ),
     );
-    child(
-        commands,
-        b,
-        (icon(font, g::RESTART_ALT, 16.0, ACCENT), Pickable::IGNORE),
-    );
-    commands.entity(b).observe(
-        move |mut t: Trigger<Pointer<Click>>,
-              rows: Res<ParamRows>,
-              mut st: ResMut<ConvertState>| {
-            t.propagate(false);
-            if t.event().button == PointerButton::Primary {
-                reset_row(&rows.0[i], &mut st);
-            }
-        },
-    );
-    commands
-        .entity(b)
-        .observe(|mut t: Trigger<Pointer<Pressed>>| t.propagate(false));
+    let glyph = child(commands, b, (icon(font, g::RESTART_ALT, 18.0, ACCENT), Pickable::IGNORE));
+    // The icon brightens under the pointer (there is no background to show the hover).
+    commands.entity(b).observe(move |_: Trigger<Pointer<Over>>, mut c: Query<&mut TextColor>| {
+        if let Ok(mut c) = c.get_mut(glyph) {
+            c.0 = TEXT;
+        }
+    });
+    commands.entity(b).observe(move |_: Trigger<Pointer<Out>>, mut c: Query<&mut TextColor>| {
+        if let Ok(mut c) = c.get_mut(glyph) {
+            c.0 = ACCENT;
+        }
+    });
+    crate::ui::pointer_cursor(commands, b);
+    commands.entity(b).observe(move |mut t: Trigger<Pointer<Click>>, rows: Res<ParamRows>, mut st: ResMut<ConvertState>| {
+        t.propagate(false);
+        if t.event().button == PointerButton::Primary {
+            reset_row(&rows.0[i], &mut st);
+        }
+    });
+    commands.entity(b).observe(|mut t: Trigger<Pointer<Pressed>>| t.propagate(false));
     b
 }
 
@@ -1864,7 +1858,7 @@ pub fn build(
                                     border: nest_border(def.depth),
                                     align_items: AlignItems::Center,
                                     column_gap: Val::Px(8.0),
-                                    padding: UiRect::horizontal(Val::Px(6.0)),
+                                    padding: UiRect { left: Val::Px(6.0), right: Val::Px(RESET_GUTTER), ..default() },
                                     overflow: Overflow::clip(),
                                     ..default()
                                 },
@@ -1897,7 +1891,7 @@ pub fn build(
                             node,
                             (line(def.label, 13.0, TEXT), Pickable::IGNORE),
                         );
-                        let reset = spawn_reset(commands, node, font, i, true);
+                        let reset = spawn_reset(commands, node, font, i, 3.0);
                         commands.entity(node).observe(
                             move |_: Trigger<Pointer<Click>>,
                                   rows: Res<ParamRows>,
@@ -1959,7 +1953,7 @@ pub fn build(
                                     align_items: AlignItems::Center,
                                     justify_content: JustifyContent::SpaceBetween,
                                     column_gap: Val::Px(8.0),
-                                    padding: UiRect::horizontal(Val::Px(6.0)),
+                                    padding: UiRect { left: Val::Px(6.0), right: Val::Px(RESET_GUTTER), ..default() },
                                     overflow: Overflow::clip(),
                                     ..default()
                                 },
@@ -1986,7 +1980,7 @@ pub fn build(
                                 Pickable::IGNORE,
                             ),
                         );
-                        let reset = spawn_reset(commands, right, font, i, false);
+                        let reset = spawn_reset(commands, head, font, i, 3.0);
                         let value =
                             child(commands, right, (line("", 13.0, ACCENT), Pickable::IGNORE));
                         let chev = child(
@@ -2089,7 +2083,7 @@ pub fn build(
                                         INDENT + def.depth as f32 * SUB_INDENT,
                                     )),
                                     border: nest_border(def.depth),
-                                    padding: UiRect::axes(Val::Px(8.0), Val::Px(6.0)),
+                                    padding: UiRect { left: Val::Px(8.0), right: Val::Px(RESET_GUTTER), top: Val::Px(6.0), bottom: Val::Px(6.0) },
                                     ..default()
                                 },
                                 BackgroundColor(ITEM),
@@ -2125,7 +2119,7 @@ pub fn build(
                                 pass(),
                             ),
                         );
-                        let reset = spawn_reset(commands, right_group, font, i, false);
+                        let reset = spawn_reset(commands, node, font, i, 4.0);
                         let vbox = child(
                             commands,
                             right_group,
@@ -2549,7 +2543,6 @@ pub fn conv_ui_system(
     lp: Res<LogPanel>,
     sections: Res<OpenSections>,
     pw: Res<PropsWidth>,
-    ui_refs: Res<UiRefs>,
     mut nodes: Query<&mut Node>,
     mut texts: Query<&mut Text>,
     mut bgs: Query<&mut BackgroundColor>,

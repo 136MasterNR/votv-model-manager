@@ -388,7 +388,8 @@ pub enum ToolAction {
 const TOOLS: [(ToolAction, Glyph); 6] = [
     (ToolAction::Open, g::FOLDER_OPEN),
     (ToolAction::Rename, g::EDIT),
-    (ToolAction::Regen, g::REFRESH),
+    // "Regenerate icon": Material Symbols' reset_image (from the embedded Symbols subset, see icon_font.rs).
+    (ToolAction::Regen, g::RESET_IMAGE),
     (ToolAction::Lock, g::LOCK),
     (ToolAction::Toggle, g::BLOCK),
     (ToolAction::Delete, g::DELETE),
@@ -411,6 +412,8 @@ pub struct Toolbar {
 #[derive(Resource)]
 pub struct ToolbarRefs {
     label: Entity,
+    /// The gray part of the label (the model name(s)), a `TextSpan` child of `label`.
+    label_name: Entity,
     warn: Entity,
     buttons: Vec<(ToolAction, Entity)>, // the button and (as its only child) its icon
 }
@@ -433,16 +436,27 @@ pub fn build_toolbar(commands: &mut Commands, font: &IconFont) -> (Entity, Toolb
         root,
         Node { height: Val::Px(38.0), align_items: AlignItems::Center, column_gap: Val::Px(6.0), padding: UiRect::horizontal(Val::Px(12.0)), ..default() },
     );
-    let label = child(
+    // A node's own `overflow` only clips its CHILDREN, never its own text: so the text sits in a clipping box that takes
+    // the room left of the buttons, and a long label is cut at the buttons instead of running over them.
+    let label_box = child(
         commands,
         row,
         (
-            txt("", 12.0, DIM),
-            TextLayout { linebreak: LineBreak::NoWrap, ..default() },
             Node { flex_grow: 1.0, flex_basis: Val::Px(0.0), min_width: Val::Px(0.0), overflow: Overflow::clip(), ..default() },
             Pickable::IGNORE,
         ),
     );
+    let label = child(
+        commands,
+        label_box,
+        (
+            txt("", 12.0, DIM),
+            TextLayout { linebreak: LineBreak::NoWrap, ..default() },
+            Node { flex_shrink: 0.0, ..default() },
+            Pickable::IGNORE,
+        ),
+    );
+    let label_name = child(commands, label, (TextSpan::new(""), TextFont { font_size: 12.0, ..default() }, TextColor(DIM)));
     let mut buttons = Vec::new();
     for (action, glyph) in TOOLS {
         let b = child(
@@ -497,7 +511,7 @@ pub fn build_toolbar(commands: &mut Commands, font: &IconFont) -> (Entity, Toolb
         ),
     );
     child(commands, warn, (txt(LOCK_WARNING, 12.0, WARN), Pickable::IGNORE));
-    (root, ToolbarRefs { label, warn, buttons })
+    (root, ToolbarRefs { label, label_name, warn, buttons })
 }
 
 /// What a toolbar button does to the selection. Lock and Delete ask for a second click first.
@@ -598,6 +612,7 @@ pub fn toolbar_system(
     font: Res<IconFont>,
     ed: Res<Editing>,
     mut texts: Query<&mut Text>,
+    mut spans: Query<&mut TextSpan>,
     mut colors: Query<&mut TextColor>,
     mut nodes: Query<&mut Node>,
     children: Query<&Children>,
@@ -631,9 +646,12 @@ pub fn toolbar_system(
             _ => TEXT,
         };
         let want = if available(action) { natural } else { OFF_COL };
-        if let Ok(mut c) = colors.get_mut(ic) {
-            if c.0 != want {
-                c.0 = want;
+        // every part of the icon
+        for k in kids.iter() {
+            if let Ok(mut c) = colors.get_mut(k) {
+                if c.0 != want {
+                    c.0 = want;
+                }
             }
         }
         if action == ToolAction::Toggle {
@@ -645,11 +663,24 @@ pub fn toolbar_system(
             }
         }
     }
-    // The label: what the hovered button does, a pending confirmation, or the selection.
+    // The label, in two tones: the action under the pointer (white) followed by the selected model name(s) (gray); with no
+    // action hovered, the name(s) and a hint about selecting several (all gray). A pending confirmation replaces it.
+    let names = {
+        let v: Vec<&str> = lib.selection.iter().filter_map(|&i| lib.entries.get(i)).map(|e| e.name.as_str()).collect();
+        match v.len() {
+            0 => String::new(),
+            1..=3 => v.join(", "),
+            k => format!("{}, +{} more", v[..3].join(", "), k - 3),
+        }
+    };
     let plural = |one: &str, many: &str| if n > 1 { format!("{many} ({n})") } else { one.to_string() };
-    let (text, color) = match (bar.confirm, bar.hover) {
-        (Some(ToolAction::Delete), _) => (format!("Click Delete again to remove {}", if n == 1 { "this model".to_string() } else { format!("{n} models") }), DANGER),
-        (Some(ToolAction::Lock), _) => ("Click Lock again to lock".to_string(), WARN),
+    let (head, color, tail) = match (bar.confirm, bar.hover) {
+        (Some(ToolAction::Delete), _) => (
+            format!("Click Delete again to remove {}", if n == 1 { "this model".to_string() } else { format!("{n} models") }),
+            DANGER,
+            String::new(),
+        ),
+        (Some(ToolAction::Lock), _) => ("Click Lock again to lock".to_string(), WARN, String::new()),
         (_, Some(a)) => (
             match a {
                 ToolAction::Open => "Open location".to_string(),
@@ -661,19 +692,23 @@ pub fn toolbar_system(
                 ToolAction::Delete => plural("Delete", "Delete"),
             },
             TEXT,
+            if names.is_empty() { String::new() } else { format!("  {names}") },
         ),
         _ => (
-            match (n, lib.selected.and_then(|i| lib.entries.get(i))) {
-                (0, _) => "Select a model (Ctrl or Shift for several)".to_string(),
-                (1, Some(e)) => e.name.clone(),
-                _ => format!("{n} models selected"),
-            },
+            if names.is_empty() { "No model selected".to_string() } else { names },
             DIM,
+            // The hint is for someone who has not discovered multi-select yet: not shown once several are selected.
+            if n > 1 { String::new() } else { " (Multi-select with Ctrl/Shift)".to_string() },
         ),
     };
     if let Ok(mut t) = texts.get_mut(refs.label) {
-        if t.0 != text {
-            t.0 = text;
+        if t.0 != head {
+            t.0 = head;
+        }
+    }
+    if let Ok(mut t) = spans.get_mut(refs.label_name) {
+        if t.0 != tail {
+            t.0 = tail;
         }
     }
     if let Ok(mut c) = colors.get_mut(refs.label) {
