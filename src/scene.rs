@@ -19,6 +19,11 @@ use crate::model::*;
 
 /// VotV units are centimetres; Bevy works best in metres.
 pub const UNIT: f32 = 0.01;
+/// Lumens of the preview lamp per unit of the model's `lamp_intensity`. It was 200, which made a lamp colour of 0.01 look
+/// like 1.0 in the game and a colour of 1.0 burn the texture to white; the user measured that as about 100 times too strong,
+/// so it is 2 now. (A physical candela-to-lumen conversion would be 4 pi, about 12.6, but the preview's exposure is
+/// not the game's, so this is calibrated against the game.) Raise it if lamps look too dim next to the game.
+pub const LAMP_GAIN: f32 = 2.0;
 
 /// Toggles for the things that are not verified yet (see references/open-questions.md).
 #[derive(Resource, Clone, PartialEq)]
@@ -451,13 +456,13 @@ pub fn spawn_model(
         mat_handles.push(mat);
     }
 
-    // Lamp (setProps: only when is_lamp). Offset is in raw model axes; intensity units differ from Unreal.
+    // Lamp (setProps: only when is_lamp). Offset is in raw model axes; intensity units differ from Unreal (see LAMP_GAIN).
     if full && m.num("is_lamp", 0.0) != 0.0 {
         let lamp = commands
             .spawn((
                 PointLight {
                     color: m.color("lamp_color"),
-                    intensity: m.num("lamp_intensity", 5001.0) * 200.0,
+                    intensity: m.num("lamp_intensity", 5001.0) * LAMP_GAIN,
                     range: m.num("lamp_attenuation", 2500.0) * UNIT,
                     shadows_enabled: m.num("lamp_shadows", 0.0) != 0.0,
                     ..default()
