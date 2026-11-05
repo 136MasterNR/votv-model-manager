@@ -425,7 +425,9 @@ pub fn spawn_model(
             normal_map_texture: normal,
             flip_normal_map_y: true, // the game expects DirectX-style (green down) normal maps
             emissive: if has_emissive {
-                LinearRgba::rgb(strength, strength, strength)
+                // Alpha 0 = "do not multiply by the camera exposure" (pbr_functions.wgsl: mix(1.0, exposure, emissive.a)).
+                // With alpha 1 (what `LinearRgba::rgb` gives) the default exposure (about 1/1000) made the glow invisible.
+                LinearRgba::new(strength, strength, strength, 0.0)
             } else {
                 LinearRgba::BLACK
             },

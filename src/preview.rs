@@ -546,8 +546,6 @@ pub fn apply_opts(
 /// What one section's material looked like before the game's icon look was applied.
 pub struct SectionOrig {
     normal: Option<Handle<Image>>,
-    emissive_tex: Option<Handle<Image>>,
-    emissive: LinearRgba,
     roughness: f32,
     reflectance: f32,
     samplers: Vec<(Handle<Image>, bevy::image::ImageSampler)>,
@@ -557,8 +555,6 @@ impl Default for SectionOrig {
     fn default() -> Self {
         SectionOrig {
             normal: None,
-            emissive_tex: None,
-            emissive: LinearRgba::BLACK,
             roughness: 0.5,
             reflectance: 0.5,
             samplers: Vec::new(),
@@ -576,8 +572,6 @@ impl SectionOrig {
         ];
         SectionOrig {
             normal: m.normal_map_texture.clone(),
-            emissive_tex: m.emissive_texture.clone(),
-            emissive: m.emissive,
             roughness: m.perceptual_roughness,
             reflectance: m.reflectance,
             samplers: handles
@@ -589,7 +583,8 @@ impl SectionOrig {
     }
 
     /// The icon render (see `icons.rs`) uses the diffuse and pbr maps only, samples them without filtering and uses
-    /// roughness 1 with a pbr map, 0.85 without. `on` applies that; off puts the full-detail material back.
+    /// roughness 1 with a pbr map, 0.85 without. `on` applies that, EXCEPT the emissive map, which the preview keeps
+    /// (the user wants to see what glows); off puts the full-detail material back.
     fn apply(
         &self,
         m: &mut StandardMaterial,
@@ -599,9 +594,7 @@ impl SectionOrig {
     ) {
         use bevy::image::{ImageFilterMode, ImageSampler};
         if on {
-            m.normal_map_texture = None;
-            m.emissive_texture = None;
-            m.emissive = LinearRgba::BLACK;
+            m.normal_map_texture = None; // (the emissive map stays: the preview shows what glows, the icon render does not)
             m.perceptual_roughness = if m.metallic_roughness_texture.is_some() {
                 1.0
             } else {
@@ -610,8 +603,6 @@ impl SectionOrig {
             m.reflectance = crate::scene::icon_reflectance(spec);
         } else {
             m.normal_map_texture = self.normal.clone();
-            m.emissive_texture = self.emissive_tex.clone();
-            m.emissive = self.emissive;
             m.perceptual_roughness = self.roughness;
             m.reflectance = self.reflectance;
         }
