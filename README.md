@@ -5,20 +5,24 @@
 
 An app for managing your custom **3D printer models** in [Voices of the Void](https://mrdrnose.itch.io/votv).
 
-Browse your models, check them in a 3D viewer, and import .glb files into the app to convert it into a model the game can print. GUI-only.
+Browse your models, check them in a 3D viewer, and drag any `.glb` onto the window to turn it into a model the game can print. Portable GUI.
 
-## What you can do
+![demo](readme/demo.webp)
 
-- **See your models at a glance.** Every model gets an icon, drawn similarly the game draws its own.
-- **Preview in 3D.** Orbit, pan and zoom to check a model before you play.
-- **Convert a any model to the format VotV accepts.** The manager builds the model, textures and collision for you and saves it into your printer folder.
-- **Reset any setting.** A parameter that differs from its default shows a small circular-arrow button at the end of its row; one click puts the default back.
-- **Tweak and see the result right away.** Change scale, collision, health, lamp settings, texture filters and more. The preview updates as you go.
-- **Edit later.** Models you made with the manager can be reopened with all their settings and in blender.
-- **Open in Blender** and send changes back. Save in Blender and the manager picks up the change on its own.
-- **Manage your library.** Search, rename, disable or enable, delete, regenerate or add custom icons, and export a model as an uneditable `.zip` to share.
+## Contents
 
-## Install
+- [Download](#download)
+- [Getting started](#getting-started)
+- [Your library](#your-library)
+- [The 3D preview](#the-3d-preview)
+- [Converting and editing](#converting-and-editing)
+- [Blender](#blender)
+- [The app](#the-app)
+- [Good to know](#good-to-know)
+- [Something went wrong?](#something-went-wrong)
+- [For developers](#for-developers)
+
+## Download
 
 1. Open the **Releases** page of this repository (link on the right-hand side of the GitHub page).
 2. Download the latest executable.
@@ -31,45 +35,245 @@ Browse your models, check them in a 3D viewer, and import .glb files into the ap
    If your models are somewhere else, use the gear menu at the top and choose **Change folder...**.
 2. **Click a model** to see it in the 3D preview.
 3. **Add a new model:** drag a `.glb` file onto the window (or click the "Drop a .glb here" tile). The editor opens and converts it straight away.
-4. **Adjust the settings** in the panel on the right. Every change regenerates the model. The model is saved into your library immediately on any update or change.
+4. **Adjust the settings** in the panel on the right. Every change regenerates the model, and the model is saved into your library immediately.
 
-## Controls in the preview
+## Your library
+
+### See your models at a glance
+
+Every model gets an icon, drawn the way the game draws its own. The list has two sections.
+- **EDITABLE**:models made with the manager, which can be opened and edited again
+- **MODELS**:everything else in your printer folder). Disabled models are dimmed.
+
+![](readme/library-grid.png)
+
+### Search
+
+Type in the search box above the list to filter the models by name.
+
+![](readme/search.gif)
+
+### Sort each section
+
+Each section header has its own sort button. Click it to cycle **Last Added**, **Last Modified** and **Alphabetic**.
+
+![](readme/sort.gif)
+
+### Select one or many
+
+Click selects a model, **Ctrl + click** adds or removes one, **Shift + click** selects everything from the last clicked model to this one. The toolbar above the list works on all selected models, and hovering a button shows what it does and which models it will touch.
+
+![](readme/select.gif)
+
+### Rename
+
+Renames the model and every file that carries its name, including the textures, and keeps the references inside the model files in step. The name on the tile becomes a text field (Enter confirms, Escape cancels).
+
+![](readme/rename.gif)
+
+### Regenerate icons
+
+Makes fresh icons for the selected models, using the game's own viewpoint.
+
+![](readme/regen-icons.gif)
+
+### Disable and enable
+
+Hides a model from the game without deleting it.
+
+![](readme/disable.gif)
+
+### Lock a model
+
+Removes the saved `.glb` so a model can no longer be edited.
+
+![](readme/lock.gif)
+
+### Delete
+
+Removes models for good. The red button asks for a second click first.
+
+![](readme/delete.gif)
+
+### Import ready-made models
+
+Drop model folders or `.zip` files onto the list, or use the **Drop folders / .zip here** tile (click for a folder picker, Shift + click for a `.zip` picker). They are copied into your printer folder. Nothing is ever overwritten: a name that already exists becomes `name_2`, `name_3` and so on.
+
+![](readme/import.gif)
+
+### Export a model to share
+
+The **Export** button above the preview saves a model as a `.zip` that you can share safely: it does not contain the editable `.glb`, so others cannot use it to edit your model.
+
+![](readme/export.gif)
+
+## The 3D preview
+
+### Look at it from every side
+
+Rotate with the left mouse button, move the view with the right one, zoom with the wheel. **Reset camera** puts the view back.
 
 | Action | How |
 |---|---|
 | Rotate | Left mouse button, drag |
 | Move the view | Right mouse button, drag |
 | Zoom | Mouse wheel |
-| More view options | The eye button at the bottom right of the preview (the options open above it): game renderer look / view, static light, **anti-aliasing (M)**, hulls, **printer limits (P)**, **lamp position (I)** and more |
-| See where the lamp is | Open the **LIGHT** section of the properties (a light bulb icon on its header says the marker is on; click it to switch it off), or use **Lamp position (I)** in the view options. A cross with a small diamond in the lamp's colour is drawn at the lamp's position, with a thin line from the model's origin (the small grey cross) that the offset is measured from. It follows the Offset sliders at once and shows through the model. Nothing is drawn for a model that is not a lamp |
-| Check the model against the game's printers | **Printer limits (P)** in the view options, or just open the **MODEL** section of the properties (a *fullscreen* icon on its header says the volumes are on; click it to switch them off). The preview draws the large (200 x 200 x 300 cm) and the desktop (45 x 45 x 60 cm) printer volume around the model, blue when it fits and red when it does not, with a short report at the top left. A model that is too big for every printer gets a red warning even with the volumes off |
 
-## The model name in the editor
+![](readme/preview-camera.gif)
 
-The model name at the top of the properties panel is plain text. The **pencil button** next to it starts the rename: the name
-becomes a text field with all of its text selected (Enter confirms, Escape cancels). A name that does not fit scrolls slowly
-and smoothly to its end while the pointer is over it and glides back when the pointer leaves; that never takes a click.
+### View options
 
-## Selecting models and the toolbar
+The eye button at the bottom right of the preview opens the view options. Most have a key, shown in brackets, that toggles them.
 
-Click a model to select it, **Ctrl + click** to add or remove one, **Shift + click** to select everything from the last
-clicked model to this one (only the models the search leaves visible). The toolbar above the list works on **all** selected
-models; hover a button to see what it does. The preview shows the last clicked one. **Export** (a `.zip` you can share safely: others cannot use it to edit your model) is the button at the top of the preview, not in this toolbar.
+### See it like the game sees it
 
-| Button | What it does | Selection |
-|---|---|---|
-| **Open location** | Opens the model's folder in Explorer | one model |
-| **Rename** | Renames the model and its files (the name on the tile becomes a text field) | one model |
-| **Regenerate icon** | Makes fresh icons, one after the other | any number |
-| **Lock model** (yellow) | Deletes the saved `.glb` so the models can no longer be edited. Shows a warning and asks for a second click | editable models |
-| **Disable / Enable** | Hides the models from the game without deleting them (it enables when only disabled models are selected) | any number |
-| **Delete** (red) | Removes the models for good; asks for a second click | any number |
+**Game renderer look (L)** shows the model with the game's lighting and shading, as in its icon. **Game renderer view (G)** uses the game's icon camera. Switch them off for a plain studio view.
 
-Buttons that do not apply to the selection are dimmed. A right click on a tile just selects it (there is no context menu).
+### Debug views
+
+**View (C)** cycles between the textured model, the **section colours** (one colour per material section) and a **UV checker** pattern, to find stretched textures and mixed-up parts.
+
+### Anti-aliasing
+
+**Anti-aliasing (M)** smooths the jagged edges of the preview. It is on by default and only changes the preview, never the icons.
+
+### Static light
+
+By default the preview lights turn with the camera. **Static light (S)** keeps them where they are, so you can see how the light falls while you turn the model.
+
+### When the model looks wrong
+
+A few switches change how the preview treats the model, which helps when something looks wrong: **Flip UV V (U)**, **Flip winding (F)**, **Two-sided (B)**, **Z-up (Z)**, **Alpha (A)** (cycles through the transparency modes), **Tangents (T)** (the game's tangents or generated ones) and **Drop duplicate faces (D)**.
+
+### Collision hulls
+
+**Show hulls (H)** draws the collision shapes the game will use around the model. Opening the **COLLISION** section of the properties turns it on for you (an eye icon on the section header says so; click the icon to switch it off).
+
+### Will it fit the printer?
+
+**Printer limits (P)**, or just opening the **MODEL** section, draws the large (200 x 200 x 300 cm) and the desktop (45 x 45 x 60 cm) printer volume around the model: blue when it fits, red when it does not, with a short report at the top left. A model that is too big for every printer gets a red warning even with the volumes off.
+
+![](readme/printer-limits.png)
+
+### See where the lamp is
+
+For lamp models, **Lamp position (I)** or the **LIGHT** section draws a marker in the lamp's colour at the lamp's position, with a thin line from the model's origin. It follows the Offset sliders at once and shows through the model.
+
+## Converting and editing
+
+### Drop a .glb to make a printer model
+
+Drag a `.glb` onto the window (or click the **Drop a .glb here** tile). The editor opens and converts it straight away. The manager builds the model, textures and collision the game needs and saves everything into your printer folder.
+
+![](readme/convert-drop.gif)
+
+### The editor
+
+The 3D preview on the left and the **properties** panel on the right: icon, name, an info box and the collapsible sections of settings.
+
+### Every change shows up right away
+
+Change any setting and the model is rebuilt; the preview updates as you go. The result is saved into your library on every change, so there is no save button to forget.
+
+### Sliders, fields and dropdowns
+
+Sliders can be dragged, clicked, or moved with the keyboard (arrows, PageUp / PageDown, Home / End). Click a number to type an exact value. Options that only matter when another one is on are dimmed until you switch that one on. Only one section is open at a time.
+
+### Reset any setting
+
+A setting that differs from its default shows a small circular-arrow button at the end of its row. One click puts the default back.
+
+### MODEL
+
+**Scale**, **Apply skeleton** and **Drop transparent parts**.
+
+### TEXTURES
+
+Texture size limits (**Max tile size**, **Max atlas size**), **Apply base colour factor**, **Flip normal green**, **Bake emissive map** and **Emissive strength**.
+
+### COLLISION
+
+Generate collision, ignore `UCX_` shapes, quality, VHACD resolution, maximum hulls, fallback box size and offsets, with **Show collision (debug)** to see the result.
+
+### DURABILITY
+
+**Indestructible**, **Health** (0 = automatic), **Impact resistance** and **Damage resistance**.
+
+### MATERIAL
+
+The **Physical material** of the model.
+
+### LIGHT
+
+Turn a model into a **Lamp** and set its intensity, radius, shadows, whether the player can switch it, its colour and its position offsets.
+
+### TEXTURE FILTERS
+
+Pick how the game filters each texture (**Diffuse**, **PBR**, **Normal**, **Emissive**): Nearest, Bilinear, Trilinear or Default.
+
+### Info box
+
+The box under the model name lists what will be in the game for the current settings: material, durability, lamp values and texture filters. It changes as you edit.
+
+### Rename in the editor
+
+The pencil button next to the model name starts the rename: the name becomes a text field with all its text selected. A name that does not fit scrolls to its end while the pointer is over it and glides back when it leaves.
+
+### Icon of the model
+
+The icon box shows the model's icon. **Capture as icon** renders a new one. To use your own picture, drop a `.png` onto the editor.
+
+### Replace the model
+
+Drop another `.glb` while you are editing to run the same settings on a different model.
+
+### Logs
+
+The logs button at the bottom left of the preview shows what the converter did: the input, any failure, every message of the last run and which stages were reused.
+
+### Edit later
+
+Select a model from the EDITABLE section and click **Edit** above the preview: it reopens with all the settings it was made with.
+
+## Blender
+
+### Open in Blender
+
+In the editor, the blue and orange **Open in Blender** button opens the model in a clean Blender scene. It appears only when Blender is found.
+
+![](readme/blender-open.gif)
+
+### Send changes back
+
+The manager adds an **Export to VotV Model Manager** button inside Blender (3D view header and File menu). Click it and the model is written back; the manager notices the change by itself and regenerates the model.
+
+![](readme/blender-export-close-up.png)
+![](readme/blender-back.gif)
+
+### Blender path
+
+The manager looks for Blender in the usual places. If yours lives somewhere else, pick it under the gear menu, **Blender path...**.
+
+## The app
+
+### Settings menu
+
+The gear menu has **Change folder...** (choose a different printer folder), **Refresh** (rescan the folder) and **Blender path...**.
+
+### When something is wrong
+
+A model that cannot be loaded shows a `!` on its tile. Run the app from a terminal with `--diagnose "C:\path\to\ModelFolder"` to get a report to include when you ask for help.
+
+### Build number
+
+The small gray number next to the app name is the build number. Mention it when you report a problem.
+
+![](readme/build-number.png)
 
 ## Good to know
 
 - Only **.glb** files can be converted. Other file types are ignored.
+- Dropping a model **folder** or a model **.zip** copies it into your library instead of converting it.
 - The first time the 3D view opens there may be a short pause while it gets ready.
 - Names with non-English letters may show up as boxes in the list.
 - **Open in Blender** appears only when Blender is found. If it is not, set it under the gear menu, **Blender path...**.
@@ -101,9 +305,11 @@ The build number in the title bar is the GitHub Actions run number (`GITHUB_RUN_
 
 Icons come from Google's Material Icons font plus a tiny Material Symbols subset (both Apache-2.0); see `docs/icon-fonts.md`.
 
+README pictures live in `docs/media/` (see `docs/media/SHOT-LIST.md`).
+
 More technical notes are in `docs/` and `converter/README.md`.
 
-## Disclure
+## Disclosure
 
 This project is being vibe coded with Claude Sonnet 5.5 (Free Tier).
 
