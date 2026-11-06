@@ -506,6 +506,16 @@ fn load_obj_robust(
         text.insert_str(0, "mtllib __auto.mtl\n");
     }
 
+    // Geometry: our own parser first (see `parse_obj_geometry`). A model exported with separate v / vt / vn index lists
+    // (Blender's usual output, e.g. Miku) came out of tobj without UVs and normals in the preview, which showed one texel
+    // with flat per-triangle lighting (the cyan shimmer). tobj stays as the fallback for anything the parser refuses.
+    if let Ok((own_mats, _)) = tobj::load_mtl_buf(&mut std::io::Cursor::new(mtl.clone().into_bytes())) {
+        match parse_obj_geometry(&text, &own_mats) {
+            Ok(models) => return Ok((models, own_mats)),
+            Err(e) => eprintln!("[model] own OBJ parser refused the file ({e}); using tobj"),
+        }
+    }
+
     // tobj calls the loader once per `mtllib` line; give it the cleaned MTL once and nothing after.
     let first = std::cell::Cell::new(true);
     let opts = tobj::LoadOptions {
@@ -524,6 +534,169 @@ fn load_obj_robust(
         })
         .map_err(|e| format!("OBJ parse error ({e:?}): {e}"))?;
     Ok((models, mats.unwrap_or_default()))
+}
+
+/// One mesh being built: every distinct (position, uv, normal) index triple of a face corner becomes one vertex, so the
+/// arrays are aligned whatever index lists the file uses.
+#[derive(Default)]
+struct MeshBuilder {
+    map: HashMap<(usize, usize, usize), u32>,
+    positions: Vec<f32>,
+    normals: Vec<f32>,
+    texcoords: Vec<f32>,
+    indices: Vec<u32>,
+    all_uv: bool,
+    all_normal: bool,
+}
+
+impl MeshBuilder {
+    fn new() -> Self {
+        Self { all_uv: true, all_normal: true, ..Default::default() }
+    }
+}
+
+/// `1`, `-1` (relative to the end of the list) -> zero-based index.
+fn obj_index(s: &str, len: usize) -> Result<usize, String> {
+    let i: i64 = s.parse().map_err(|_| format!("bad index '{s}'"))?;
+    let z = if i > 0 { i - 1 } else if i < 0 { len as i64 + i } else { return Err("index 0".into()) };
+    if z < 0 || z as usize >= len {
+        return Err(format!("index {i} out of range ({len})"));
+    }
+    Ok(z as usize)
+}
+
+fn floats<'a>(it: impl Iterator<Item = &'a str>, n: usize) -> Result<Vec<f32>, String> {
+    let mut v: Vec<f32> = Vec::with_capacity(n);
+    for t in it.take(n) {
+        v.push(t.parse().map_err(|_| format!("bad number '{t}'"))?);
+    }
+    Ok(v)
+}
+
+/// Read the geometry of an OBJ: one mesh per object / group and material (like tobj), with polygons fan-triangulated.
+/// Position, UV and normal lists are indexed independently, as the format allows.
+fn parse_obj_geometry(text: &str, mats: &[tobj::Material]) -> Result<Vec<tobj::Model>, String> {
+    let (mut pos, mut tex, mut nor): (Vec<[f32; 3]>, Vec<[f32; 2]>, Vec<[f32; 3]>) = (vec![], vec![], vec![]);
+    let mut models: Vec<tobj::Model> = Vec::new();
+    let mut name = String::from("unnamed");
+    let mut mat: Option<usize> = None;
+    let mut cur = MeshBuilder::new();
+
+    fn flush(cur: &mut MeshBuilder, name: &str, mat: Option<usize>, models: &mut Vec<tobj::Model>) {
+        let b = std::mem::replace(cur, MeshBuilder::new());
+        if b.indices.is_empty() {
+            return;
+        }
+        let mesh = tobj::Mesh {
+            positions: b.positions,
+            normals: if b.all_normal { b.normals } else { Vec::new() },
+            texcoords: if b.all_uv { b.texcoords } else { Vec::new() },
+            indices: b.indices,
+            material_id: mat,
+            ..Default::default()
+        };
+        models.push(tobj::Model::new(mesh, name.to_string()));
+    }
+
+    for (ln, raw) in text.lines().enumerate() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let mut it = line.split_whitespace();
+        let key = it.next().unwrap_or("");
+        let err = |m: String| format!("line {}: {m}", ln + 1);
+        match key {
+            "v" => {
+                let f = floats(it, 3).map_err(err)?;
+                if f.len() < 3 {
+                    return Err(err("v needs 3 numbers".into()));
+                }
+                pos.push([f[0], f[1], f[2]]);
+            }
+            "vt" => {
+                let f = floats(it, 2).map_err(err)?;
+                if f.is_empty() {
+                    return Err(err("vt needs a number".into()));
+                }
+                tex.push([f[0], f.get(1).copied().unwrap_or(0.0)]);
+            }
+            "vn" => {
+                let f = floats(it, 3).map_err(err)?;
+                if f.len() < 3 {
+                    return Err(err("vn needs 3 numbers".into()));
+                }
+                nor.push([f[0], f[1], f[2]]);
+            }
+            "f" => {
+                let mut corners: Vec<(usize, Option<usize>, Option<usize>)> = Vec::new();
+                for c in it {
+                    let mut parts = c.split('/');
+                    let v = obj_index(parts.next().unwrap_or(""), pos.len()).map_err(err)?;
+                    let t = match parts.next() {
+                        Some(s) if !s.is_empty() => Some(obj_index(s, tex.len()).map_err(err)?),
+                        _ => None,
+                    };
+                    let n = match parts.next() {
+                        Some(s) if !s.is_empty() => Some(obj_index(s, nor.len()).map_err(err)?),
+                        _ => None,
+                    };
+                    corners.push((v, t, n));
+                }
+                if corners.len() < 3 {
+                    continue; // points and lines are not geometry we draw
+                }
+                // Resolve each corner to a vertex of the mesh being built.
+                let mut ids = Vec::with_capacity(corners.len());
+                for &(v, t, n) in &corners {
+                    let key = (v, t.unwrap_or(usize::MAX), n.unwrap_or(usize::MAX));
+                    let id = match cur.map.get(&key) {
+                        Some(&id) => id,
+                        None => {
+                            let id = (cur.positions.len() / 3) as u32;
+                            cur.positions.extend_from_slice(&pos[v]);
+                            match t {
+                                Some(t) => cur.texcoords.extend_from_slice(&tex[t]),
+                                None => {
+                                    cur.all_uv = false;
+                                    cur.texcoords.extend_from_slice(&[0.0, 0.0]);
+                                }
+                            }
+                            match n {
+                                Some(n) => cur.normals.extend_from_slice(&nor[n]),
+                                None => {
+                                    cur.all_normal = false;
+                                    cur.normals.extend_from_slice(&[0.0, 0.0, 0.0]);
+                                }
+                            }
+                            cur.map.insert(key, id);
+                            id
+                        }
+                    };
+                    ids.push(id);
+                }
+                for k in 1..ids.len() - 1 {
+                    cur.indices.extend_from_slice(&[ids[0], ids[k], ids[k + 1]]);
+                }
+            }
+            "o" | "g" => {
+                flush(&mut cur, &name, mat, &mut models);
+                let rest = line[key.len()..].trim();
+                name = if rest.is_empty() { "unnamed".to_string() } else { rest.to_string() };
+            }
+            "usemtl" => {
+                flush(&mut cur, &name, mat, &mut models);
+                let m = line[key.len()..].trim();
+                mat = mats.iter().position(|x| x.name == m);
+            }
+            _ => {}
+        }
+    }
+    flush(&mut cur, &name, mat, &mut models);
+    if models.is_empty() {
+        return Err("no faces".into());
+    }
+    Ok(models)
 }
 
 fn flatten(
@@ -929,5 +1102,36 @@ pub fn check(m: &ModelData) {
     println!("center {:?}  radius {:.1} cm", m.center, m.radius);
     if m.hulls.is_empty() {
         println!("note: no UCX_ hulls, so in game this model gets no health, damage data, edible or bites");
+    }
+}
+
+#[cfg(test)]
+mod obj_parser_tests {
+    use super::*;
+
+    /// Separate v / vt / vn lists (more normals than positions, like Blender exports): UVs and normals must come out
+    /// aligned with the positions and keep their values.
+    #[test]
+    fn separate_index_lists_keep_uvs_and_normals() {
+        let obj = "o A\nv 0 0 0\nv 1 0 0\nv 0 1 0\nvt 0.1 0.2\nvt 0.3 0.4\nvt 0.5 0.6\n\
+                   vn 0 0 1\nvn 0 1 0\nvn 1 0 0\nvn 0 0 -1\nusemtl m\nf 1/1/1 2/2/2 3/3/3\nf 1/1/4 3/3/3 2/2/2\n";
+        let models = parse_obj_geometry(obj, &[]).unwrap();
+        assert_eq!(models.len(), 1);
+        let m = &models[0].mesh;
+        // 4 distinct corner triples: (1,1,1) (2,2,2) (3,3,3) (1,1,4)
+        assert_eq!(m.positions.len(), 4 * 3);
+        assert_eq!(m.normals.len(), m.positions.len());
+        assert_eq!(m.texcoords.len(), 4 * 2);
+        assert_eq!(m.indices.len(), 6);
+        assert_eq!(&m.texcoords[0..2], &[0.1, 0.2]);
+        assert_eq!(&m.texcoords[4..6], &[0.5, 0.6]);
+    }
+
+    #[test]
+    fn quads_are_triangulated_and_negative_indices_work() {
+        let obj = "v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\nf -4 -3 -2 -1\n";
+        let models = parse_obj_geometry(obj, &[]).unwrap();
+        assert_eq!(models[0].mesh.indices.len(), 6);
+        assert!(models[0].mesh.texcoords.is_empty() && models[0].mesh.normals.is_empty());
     }
 }
