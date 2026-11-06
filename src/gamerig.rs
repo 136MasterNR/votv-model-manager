@@ -10,7 +10,8 @@
 //!   (X forward, Y right, Z up), looking at C [V].
 //! * Lights (point lights, white, no distance falloff inside 4R, no shadows) at (2R, 2R, R) intensity 3 and
 //!   (-2R, -2R, R) intensity 1, measured from the MESH ORIGIN, not from C [V].
-//! * No sky light, ambient, reflections, shadows, AO, anti-aliasing, bloom or tone curve; background: the Blueprint clears to 0.2 grey, but the measured icon is black (see below).
+//! * No sky light, ambient, reflections, shadows, AO, anti-aliasing, bloom or tone curve (the manager adds a global
+//!   ambient brightness on top, `AMBIENT_FRACTION`, so unlit parts are not black); background: the Blueprint clears to 0.2 grey, but the measured icon is black (see below).
 //!
 //! Approximations made here:
 //! * The lights are DIRECTIONAL lights pointing from the light's position to C. The game's point lights have
@@ -42,8 +43,22 @@ pub const CAMERA_PITCH_DEG: f32 = 30.0;
 pub const CAMERA_YAW_DEG: f32 = 45.0;
 pub const KEY_INTENSITY: f32 = 3.0;
 pub const FILL_INTENSITY: f32 = 1.0;
+/// How many degrees both lights are raised above the positions the Blueprint gives them (`Rig::lights`). 0 is exactly
+/// the game's numbers. The user compared renders with the game and found that 12 degrees higher looks more accurate; it
+/// applies to the generated icons and to the preview alike. Positive = higher, negative = lower (never above 80).
+pub const LIGHT_RAISE_DEG: f32 = 12.0;
 /// Bevy lux that give the same diffuse brightness as one unit of Unreal light intensity (see the module notes).
 pub const LUX_PER_UNIT: f32 = 1072.0;
+/// Bevy's default exposure (ev100 9.7) divides every light value by about 998 before it reaches the screen.
+pub const EXPOSURE_DIVISOR: f32 = 998.0;
+/// Global brightness of the whole scene, in the preview and in every generated icon: the fraction of its own colour
+/// that a surface shows when no light reaches it (33%: a shadowed part is dark, not black). The game's own icon rig has
+/// no ambient light at all (measured), so this is a deliberate departure from it, decided by the user on 2026-11-06;
+/// set it to 0.0 for the game's exact look.
+pub const AMBIENT_FRACTION: f32 = 0.33;
+/// The same thing as a Bevy `AmbientLight::brightness`: Bevy's ambient term is albedo x brightness x exposure, so the
+/// brightness that shows `AMBIENT_FRACTION` of the albedo is the fraction times the exposure divisor (about 329).
+pub const AMBIENT_BRIGHTNESS: f32 = AMBIENT_FRACTION * EXPOSURE_DIVISOR;
 /// The icon's background. The game's icon.png is pure black (measured; the Blueprint says 0.2 grey), but the manager
 /// leaves it transparent on the user's request: black or not, nothing is drawn behind the model.
 pub const BACKGROUND: Color = Color::NONE;
@@ -108,6 +123,12 @@ impl Rig {
         }
     }
 
+    /// The directions the key and the fill light shine, with `LIGHT_RAISE_DEG` applied. The icon render and the preview
+    /// use these (the raw game numbers stay in `key_travel` / `fill_travel`).
+    pub fn lights(&self) -> (Vec3, Vec3) {
+        (raise_light(self.key_travel, LIGHT_RAISE_DEG), raise_light(self.fill_travel, LIGHT_RAISE_DEG))
+    }
+
     pub fn camera_pos(&self) -> Vec3 {
         self.view_dir * self.distance
     }
@@ -134,6 +155,18 @@ pub fn orbit_angles(d: Vec3) -> (f32, f32) {
     (d.x.atan2(d.z), d.y.clamp(-1.0, 1.0).asin())
 }
 
+/// `travel` (the direction a light shines) with the light moved `deg` degrees higher on its circle around the centre:
+/// its elevation grows (never beyond 80 degrees), its direction around the vertical axis stays.
+pub fn raise_light(travel: Vec3, deg: f32) -> Vec3 {
+    let to_light = -travel;
+    let flat = Vec3::new(to_light.x, 0.0, to_light.z);
+    if flat.length_squared() < 1.0e-6 {
+        return travel; // straight above or below: nothing to raise
+    }
+    let elevation = (to_light.y.clamp(-1.0, 1.0).asin() + deg.to_radians()).min(80.0_f32.to_radians());
+    -(flat.normalize() * elevation.cos() + Vec3::Y * elevation.sin())
+}
+
 /// A rotation whose forward (-Z) is `travel`, for a directional light.
 pub fn light_rotation(travel: Vec3) -> Quat {
     let up = if travel.dot(Vec3::Y).abs() > 0.99 {
@@ -150,6 +183,14 @@ mod tests {
 
     fn close(a: Vec3, b: Vec3) -> bool {
         a.distance(b) < 1.0e-4
+    }
+
+    #[test]
+    fn ambient_brightness_shows_the_chosen_fraction_of_the_albedo() {
+        // Bevy: radiance = albedo x brightness x exposure, and the exposure is 1 / EXPOSURE_DIVISOR.
+        let shown = AMBIENT_BRIGHTNESS / EXPOSURE_DIVISOR;
+        assert!((shown - AMBIENT_FRACTION).abs() < 1.0e-4);
+        assert!((AMBIENT_BRIGHTNESS - 329.34).abs() < 0.01);
     }
 
     #[test]
@@ -179,6 +220,23 @@ mod tests {
         let centred = Rig::new(Vec3::ZERO, 100.0, false);
         assert!(close(centred.key_travel, Vec3::new(-2.0, -1.0, -2.0) / 3.0));
         assert!(close(centred.fill_travel, Vec3::new(2.0, -1.0, 2.0) / 3.0));
+    }
+
+    #[test]
+    fn raising_a_light_lifts_it_and_keeps_its_direction_around_the_vertical_axis() {
+        let travel = Vec3::new(-2.0, -1.0, -2.0).normalize(); // the game's key light, shining down towards the centre
+        let raised = raise_light(travel, 12.0);
+        let (from, to) = (-travel, -raised);
+        assert!(to.y > from.y, "the light must be higher");
+        let (a, b) = (Vec2::new(from.x, from.z).normalize(), Vec2::new(to.x, to.z).normalize());
+        assert!((a - b).length() < 1.0e-4, "the direction around the vertical axis must not change");
+        assert!((raised.length() - 1.0).abs() < 1.0e-4);
+        assert!((raise_light(travel, 0.0) - travel).length() < 1.0e-4, "0 degrees is the game's position");
+        // The rig's lights are the game's lights raised by LIGHT_RAISE_DEG.
+        let rig = Rig::new(Vec3::ZERO, 100.0, false);
+        let (key, _) = rig.lights();
+        let lift = (-key).y.asin() - (-rig.key_travel).y.asin();
+        assert!((lift - LIGHT_RAISE_DEG.to_radians()).abs() < 1.0e-3);
     }
 
     #[test]

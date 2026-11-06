@@ -22,8 +22,7 @@ use crate::ui::{OptLabel, UiRefs};
 use crate::{Layout, Library};
 
 pub const PREVIEW_LAYER: usize = 1;
-/// Ambient brightness of the normal preview (the game's icon look uses none).
-const STUDIO_AMBIENT: f32 = 350.0;
+
 const STUDIO_FOV: f32 = std::f32::consts::FRAC_PI_4;
 const STUDIO_CLEAR: Color = Color::srgb(0.07, 0.08, 0.09);
 
@@ -132,9 +131,9 @@ pub fn spawn_stage(commands: &mut Commands, images: &mut Assets<Image>) -> Previ
             ..default()
         }),
         AmbientLight {
-            brightness: STUDIO_AMBIENT,
+            brightness: crate::gamerig::AMBIENT_BRIGHTNESS,
             ..default()
-        }, // per camera, so the icon look can switch it off
+        }, // per camera; the global brightness of the scene, the same in every look (gamerig::AMBIENT_FRACTION)
         Transform::from_xyz(0.0, 0.0, 1.0),
         layer.clone(),
     ));
@@ -696,7 +695,8 @@ pub fn thumb_rig_system(
             // Anti-aliasing is its own option (M), independent of the icon look: the preview is smoothed, the generated
             // icons (icons.rs, Msaa::Off) are not.
             *msaa = if opts.aa { Msaa::Sample4 } else { Msaa::Off };
-            ambient.brightness = if look { 0.0 } else { STUDIO_AMBIENT };
+            // The same global brightness in the studio view and in the game look, so unlit parts are never black.
+            ambient.brightness = crate::gamerig::AMBIENT_BRIGHTNESS;
             *tone = if look {
                 Tonemapping::None
             } else {
@@ -746,14 +746,11 @@ pub fn thumb_rig_system(
             let (gy, gp) = rig.orbit_angles();
             cur * Quat::from_euler(EulerRot::YXZ, gy, -gp, 0.0).inverse()
         };
+        let (key_travel, fill_travel) = rig.lights();
         for (l, mut t, mut d) in &mut lights {
             t.rotation = gamerig::light_rotation(
                 delta
-                    * if l.front {
-                        rig.key_travel
-                    } else {
-                        rig.fill_travel
-                    },
+                    * if l.front { key_travel } else { fill_travel },
             );
             d.illuminance = if l.front {
                 gamerig::key_lux()
@@ -770,7 +767,7 @@ pub fn thumb_rig_system(
                 .rotation
         } else {
             let toward_light = Vec3::new(0.45, 0.55, 0.70).normalize(); // camera space: right, up, towards the viewer
-            gamerig::light_rotation(-(cur * toward_light))
+            gamerig::light_rotation(gamerig::raise_light(-(cur * toward_light), gamerig::LIGHT_RAISE_DEG))
         };
     }
 }

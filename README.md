@@ -127,7 +127,7 @@ The eye button at the bottom right of the preview opens the view options. Most h
 
 ### See it like the game sees it
 
-**Game renderer look (L)** shows the model with the game's lighting and shading, as in its icon. **Game renderer view (G)** uses the game's icon camera. Switch them off for a plain studio view.
+**Game renderer look (L)** shows the model with the game's lighting and shading, as in its icon. **Game renderer view (G)** uses the game's icon camera. Switch them off for a plain studio view. Both the preview and the generated icons get a soft overall brightness (a third of every surface's own colour), so parts the light does not reach are dark rather than black.
 
 ### Debug views
 

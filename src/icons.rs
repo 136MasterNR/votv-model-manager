@@ -444,7 +444,8 @@ pub fn icon_system(
         let handle = images.add(image);
 
         // The game's own icon rig (see gamerig.rs): FOV 10 degrees, 12R away from the front right above, two lights
-        // 3 : 1, no ambient light, no tone curve, transparent background. The bounds centre is at the world origin.
+        // 3 : 1, the global ambient brightness (gamerig::AMBIENT_FRACTION; the game has none), no tone curve, transparent
+        // background. The bounds centre is at the world origin.
         let rig = Rig::new(
             Vec3::from(loaded.data.center),
             loaded.data.radius,
@@ -466,10 +467,11 @@ pub fn icon_system(
             }
             None => {
                 let (near, far) = rig.clip_planes();
+                let (key_travel, fill_travel) = rig.lights();
                 let lights = vec![
-                    (gamerig::light_rotation(rig.key_travel), gamerig::key_lux()),
+                    (gamerig::light_rotation(key_travel), gamerig::key_lux()),
                     (
-                        gamerig::light_rotation(rig.fill_travel),
+                        gamerig::light_rotation(fill_travel),
                         gamerig::fill_lux(),
                     ),
                 ];
@@ -479,7 +481,7 @@ pub fn icon_system(
                     near,
                     far,
                     Tonemapping::None,
-                    0.0,
+                    gamerig::AMBIENT_BRIGHTNESS,
                     lights,
                 )
             }
@@ -504,7 +506,7 @@ pub fn icon_system(
                 AmbientLight {
                     brightness: ambient,
                     ..default()
-                }, // per camera; the game's capture has none
+                }, // per camera; the same global brightness as the preview
                 cam_t,
                 layer.clone(),
             ))

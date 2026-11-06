@@ -352,7 +352,7 @@ fn main() {
         .insert_resource(ClearColor(Color::srgb(0.10, 0.11, 0.13)))
         .insert_resource(AmbientLight {
             color: Color::WHITE,
-            brightness: 350.0,
+            brightness: gamerig::AMBIENT_BRIGHTNESS,
             ..default()
         })
         .insert_resource(Library {
