@@ -36,7 +36,7 @@ pub struct Opts {
     pub thumb_lights: bool, // the game's icon look: its two lights, no ambient light, no tone curve, grey background
     pub game_view: bool, // the game's icon camera: FOV 10 degrees, 12R away, from the front right above
     pub static_light: bool, // true: the preview lights stay where they are; false: they turn with the camera
-    pub aa: bool, // anti-aliasing of the preview (4x MSAA); the generated icons never use it
+    pub aa: bool, // anti-aliasing of the preview (4x MSAA); the list's icons always use it, the editor's Regenerate icon follows it
     pub show_hulls: bool,
     pub show_lamp: bool, // a marker at the lamp's position (preview.rs lamp_gizmos)
     pub printer_limits: bool, // the game printers' volumes around the model + the fit report (printer.rs)

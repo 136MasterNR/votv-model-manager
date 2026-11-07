@@ -3,7 +3,7 @@
 //! * A model folder that already has an `icon.png` (the game writes one; so do we) uses it: the worker thread just
 //!   decodes it (resized to 128 px if needed) and the tile shows it as it is.
 //! * Otherwise a worker thread parses the model and decodes only its diffuse and pbr maps (at most 1024 px), and the main
-//!   thread renders ONE model at a time into a 128x128 image (own render layer, no MSAA, no shadows, no
+//!   thread renders ONE model at a time into a 128x128 image (own render layer, 4x MSAA (ICON_MSAA), no shadows, no
 //!   normal/emissive maps) with the game's own camera and lights (gamerig.rs) on its grey background, waits a few
 //!   frames, then despawns the temporary scene.
 //!   The finished image is shown by the tile, and saved as `icon.png` in the model folder (a screenshot of the image).
@@ -45,6 +45,9 @@ pub const ICON_FILE: &str = "icon.png";
 const ICON_KINDS: &[Kind] = &[Kind::Diffuse, Kind::Pbr];
 /// Longest side of the textures decoded for an icon. The game samples the full texture at 128 px (sharp, aliased),
 /// so icons keep far more than 128 px of it and sample it without filtering (see `scene::spawn_model`).
+/// Anti-aliasing of the icon render: 4x MSAA smooths the model's edges (the game's own icon has none; the user asked for it).
+/// `Msaa::Off` gives the game's hard edges back.
+const ICON_MSAA: Msaa = Msaa::Sample4;
 const ICON_TEX_PX: u32 = 1024;
 
 /// What the worker found for one model.
@@ -496,6 +499,11 @@ pub fn icon_system(
                 )
             }
         };
+        // Anti-aliasing: the list's icons always use 4x MSAA; the editor's Regenerate icon follows the preview's option (M).
+        let msaa = match &view {
+            Some(v) if !v.opts.aa => Msaa::Off,
+            _ => ICON_MSAA,
+        };
         let camera = commands
             .spawn((
                 Camera3d::default(),
@@ -511,7 +519,7 @@ pub fn icon_system(
                     far,
                     ..default()
                 }),
-                Msaa::Off,
+                msaa,
                 tone,
                 AmbientLight {
                     brightness: ambient,

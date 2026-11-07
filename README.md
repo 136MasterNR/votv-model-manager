@@ -137,7 +137,7 @@ The eye button at the bottom right of the preview opens the view options. Most h
 
 ### Anti-aliasing
 
-**Anti-aliasing (M)** smooths the jagged edges of the preview. It is on by default and only changes the preview, never the icons.
+**Anti-aliasing (M)** smooths the jagged edges of the preview. It is on by default. The generated icons are anti-aliased too (4x MSAA, `ICON_MSAA` in `icons.rs`; set it to `Msaa::Off` for the game's hard edges); the editor's **Regenerate icon** follows the preview's option.
 
 ### Static light
 

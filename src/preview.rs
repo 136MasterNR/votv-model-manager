@@ -692,8 +692,8 @@ pub fn thumb_rig_system(
     if settings_changed {
         if let Ok((mut proj, mut camera, mut ambient, mut tone, mut msaa)) = cam.single_mut() {
             let look = opts.thumb_lights;
-            // Anti-aliasing is its own option (M), independent of the icon look: the preview is smoothed, the generated
-            // icons (icons.rs, Msaa::Off) are not.
+            // Anti-aliasing is its own option (M), independent of the icon look. The icons are smoothed too (icons.rs,
+            // `ICON_MSAA`; the editor's Regenerate icon follows this option).
             *msaa = if opts.aa { Msaa::Sample4 } else { Msaa::Off };
             // The same global brightness in the studio view and in the game look, so unlit parts are never black.
             ambient.brightness = crate::gamerig::AMBIENT_BRIGHTNESS;
