@@ -22,7 +22,7 @@ rfd = "0.15"   # native folder picker (Windows: no extra dependencies)
 # Do NOT add a [workspace] table to this manifest: converter/ is its own workspace.
 serde_json = "1"   # reads votv_convert.json (the options a model was converted with) for the Edit button
 votv-convert = { path = "converter/crates/votv-convert" }
-zip = { version = "2", default-features = false, features = ["deflate"] }   # Export writes a .zip (src/export.rs); no C codecs
+zip = { version = "9", default-features = false, features = ["deflate"] }   # Export writes a .zip (src/export.rs); no C codecs
 
 [profile.dev]
 opt-level = 1
