@@ -435,8 +435,17 @@ fn commit(
     match field {
         Field::Rename => {
             if !text.is_empty() && text != model_name(st) {
-                st.opts.output_name = Some(text);
-                st.changed(0.0);
+                // Saving under the name of ANOTHER model would replace that model: refuse and keep the current name.
+                if st.name_taken(&lib.root, &text) {
+                    layout.notice = Some(format!(
+                        "A model named \"{}\" already exists. Choose another name.",
+                        votv_convert::sanitize_name(&text)
+                    ));
+                } else {
+                    layout.notice = None;
+                    st.opts.output_name = Some(text);
+                    st.changed(0.0);
+                }
             }
         }
         Field::Slider(i) => {
