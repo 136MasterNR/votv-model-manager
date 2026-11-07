@@ -55,6 +55,35 @@ fn solid(w: u32, h: u32, c: [u8; 4]) -> RgbaImage {
     RgbaImage::from_pixel(w, h, Rgba(c))
 }
 
+/// Linear (0-1) to an 8-bit sRGB value.
+pub fn srgb_encode(lin: f64) -> u8 {
+    let c = lin.clamp(0.0, 1.0);
+    let v = if c <= 0.003_130_8 { 12.92 * c } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 };
+    round_py(v * 255.0).clamp(0.0, 255.0) as u8
+}
+
+/// 8-bit sRGB to linear (0-1).
+pub fn srgb_decode(v: u8) -> f64 {
+    let c = v as f64 / 255.0;
+    if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+}
+
+/// Multiply an sRGB texture by a linear colour factor the way a renderer does (decode, multiply, re-encode); alpha is linear.
+pub fn scale_srgb(img: &mut RgbaImage, factor: [f64; 3], alpha: f64) {
+    let mut lut = [[0u8; 256]; 3];
+    for ch in 0..3 {
+        for v in 0..256 {
+            lut[ch][v] = srgb_encode(srgb_decode(v as u8) * factor[ch]);
+        }
+    }
+    for p in img.pixels_mut() {
+        for ch in 0..3 {
+            p[ch] = lut[ch][p[ch] as usize];
+        }
+        p[3] = round_py(p[3] as f64 * alpha).clamp(0.0, 255.0) as u8;
+    }
+}
+
 /// Resize with premultiplied alpha, like Pillow does for RGBA (no dark fringes at transparent edges).
 pub fn resize_rgba(img: &RgbaImage, w: u32, h: u32) -> RgbaImage {
     if img.dimensions() == (w, h) {
@@ -108,15 +137,14 @@ pub fn material_swatch(mat: Option<&Material>, textures: &[Option<Tex>], apply_f
         let keeps_alpha = matches!(m.alpha_mode.as_deref(), Some("MASK") | Some("BLEND"));
         if let Some(t) = tex(textures, m.base_tex) {
             let mut img = t.img.clone();
-            if apply_factor {
-                if let Some(f) = m.base_factor {
-                    if f != [255, 255, 255, 255] {
-                        for p in img.pixels_mut() {
-                            for c in 0..4 {
-                                p[c] = ((p[c] as u32 * f[c] as u32 + 127) / 255) as u8;
-                            }
-                        }
-                    }
+            if let Some(f) = m.base_linear {
+                // glTF: colour = texture x factor (linear). The *alpha* factor is part of the material's opacity, so for BLEND/MASK materials it is
+                // always baked into the tile: VotV clips alpha (about 1/3), so a 24%-opaque clear-coat shell must disappear instead of becoming a solid skin.
+                let colour = apply_factor && f[..3].iter().any(|c| (*c - 1.0).abs() > 1e-4);
+                let alpha = keeps_alpha && (f[3] - 1.0).abs() > 1e-4;
+                if colour || alpha {
+                    let rgb = if colour { [f[0], f[1], f[2]] } else { [1.0, 1.0, 1.0] };
+                    scale_srgb(&mut img, rgb, if alpha { f[3] } else { 1.0 });
                 }
             }
             // OPAQUE materials ignore alpha everywhere except VotV, which would clip stray alpha into holes
@@ -127,11 +155,10 @@ pub fn material_swatch(mat: Option<&Material>, textures: &[Option<Tex>], apply_f
             }
             return (img, true);
         }
-        if let Some(mut f) = m.base_factor {
-            if !keeps_alpha {
-                f[3] = 255;
-            }
-            return (solid(64, 64, f), false);
+        if let Some(l) = m.base_linear {
+            // the factor is linear; the atlas is sRGB (a naive x255 made dark paints nearly black)
+            let a = if keeps_alpha { round_py(l[3] * 255.0).clamp(0.0, 255.0) as u8 } else { 255 };
+            return (solid(64, 64, [srgb_encode(l[0]), srgb_encode(l[1]), srgb_encode(l[2]), a]), false);
         }
     }
     (solid(64, 64, [200, 200, 200, 255]), false)
@@ -221,19 +248,14 @@ fn emissive_tile(m: &Material, tx: &[Option<Tex>]) -> Option<RgbaImage> {
         // glTF: emission = texture x factor (an absent factor next to a texture is taken as 1)
         if let Some(f) = m.emissive_factor {
             if f.iter().any(|c| (*c - 1.0).abs() > 1e-3) {
-                for p in img.pixels_mut() {
-                    for k in 0..3 {
-                        p[k] = round_py(p[k] as f64 * f[k].clamp(0.0, 1.0)) as u8;
-                    }
-                }
+                scale_srgb(&mut img, [f[0].clamp(0.0, 1.0), f[1].clamp(0.0, 1.0), f[2].clamp(0.0, 1.0)], 1.0);
             }
         }
         return Some(img);
     }
     let f = m.emissive_factor?;
     if f.iter().any(|c| *c > 0.0) {
-        let c = |v: f64| round_py(v * 255.0).clamp(0.0, 255.0) as u8;
-        return Some(solid(64, 64, [c(f[0]), c(f[1]), c(f[2]), 255]));
+        return Some(solid(64, 64, [srgb_encode(f[0]), srgb_encode(f[1]), srgb_encode(f[2]), 255]));
     }
     None
 }
@@ -253,11 +275,11 @@ fn normal_tile(m: &Material, tx: &[Option<Tex>], flip_green: bool) -> Option<Rgb
 /// VotV layout: R = metallic, G = specular (constant 0.5), B = roughness.
 /// glTF layout is G = roughness, B = metallic, so channels are re-shuffled. A material with only
 /// factors contributes roughness only (metallic stays 0 on purpose, see lessons).
-fn pbr_tile(m: &Material, tx: &[Option<Tex>]) -> Option<RgbaImage> {
+fn pbr_tile(m: &Material, tx: &[Option<Tex>], metallic_scale: f64) -> Option<RgbaImage> {
     let spec = 128u8;
     if let Some(t) = tex(tx, m.mr_tex) {
         let rf = m.roughness.map(|v| v.clamp(0.0, 1.0)).unwrap_or(1.0);
-        let mf = m.metallic.map(|v| v.clamp(0.0, 1.0)).unwrap_or(1.0);
+        let mf = m.metallic.map(|v| v.clamp(0.0, 1.0)).unwrap_or(1.0) * metallic_scale.clamp(0.0, 1.0);
         let mut img = t.img.clone();
         for p in img.pixels_mut() {
             let (g, b) = (p[1], p[2]);
@@ -276,7 +298,8 @@ fn pbr_tile(m: &Material, tx: &[Option<Tex>]) -> Option<RgbaImage> {
 pub enum MapKind {
     Emissive,
     Normal { flip_green: bool },
-    Pbr,
+    /// `metallic_scale` multiplies every metallic value written (1 = as authored).
+    Pbr { metallic_scale: f64 },
 }
 
 /// Build one extra atlas with the same layout as the diffuse atlas. Returns `None` when no
@@ -290,7 +313,7 @@ pub fn build_map(
     let any = mats.iter().flatten().any(|m| match kind {
         MapKind::Emissive => has_emission(m),
         MapKind::Normal { .. } => has_normal(m),
-        MapKind::Pbr => has_roughness(m),
+        MapKind::Pbr { .. } => has_roughness(m),
     });
     if !any {
         return None;
@@ -299,7 +322,7 @@ pub fn build_map(
     let fill = match kind {
         MapKind::Emissive => [0, 0, 0, 255],
         MapKind::Normal { .. } => [128, 128, 255, 255],
-        MapKind::Pbr => [0, 128, 128, 255],
+        MapKind::Pbr { .. } => [0, 128, 128, 255],
     };
     let mut atlas = solid(aw, ah, fill);
     for (m, p) in mats.iter().zip(placements) {
@@ -307,7 +330,7 @@ pub fn build_map(
         let tile = match kind {
             MapKind::Emissive => emissive_tile(m, textures),
             MapKind::Normal { flip_green } => normal_tile(m, textures, flip_green),
-            MapKind::Pbr => pbr_tile(m, textures),
+            MapKind::Pbr { metallic_scale } => pbr_tile(m, textures, metallic_scale),
         };
         let Some(tile) = tile else { continue };
         let tile = if tile.dimensions() != (p.w, p.h) { resize_rgba(&tile, p.w, p.h) } else { tile };

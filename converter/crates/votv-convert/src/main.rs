@@ -54,6 +54,9 @@ struct Cli {
     /// VHACD voxel resolution per axis
     #[arg(long, default_value_t = 64)]
     vhacd_resolution: u32,
+    /// multiplier 0-1 for metallic values in the pbr map (1 = as authored)
+    #[arg(long, default_value_t = 1.0)]
+    metallic_scale: f64,
     /// follow the file's emissive data literally (no toon-shader detection)
     #[arg(long)]
     literal_emissive: bool,
@@ -83,9 +86,9 @@ struct Cli {
     /// drop transparent/masked materials (VotV has no alpha blending)
     #[arg(long)]
     no_transparent: bool,
-    /// multiply base colour textures by baseColorFactor (glTF spec; the Python version did not)
+    /// don't multiply base colour textures by baseColorFactor (the old Python behaviour)
     #[arg(long)]
-    apply_base_color_factor: bool,
+    ignore_base_color_factor: bool,
     /// what to do if the output folder exists
     #[arg(long, value_enum, default_value = "replace")]
     overwrite: Overwrite,
@@ -165,7 +168,8 @@ fn main() {
         show_collision_offset: None,
         emissive: !cli.no_emissive,
         flip_normal_green: !cli.no_flip_normal_green,
-        apply_base_color_factor: cli.apply_base_color_factor,
+        apply_base_color_factor: !cli.ignore_base_color_factor,
+        metallic_scale: cli.metallic_scale,
         emissive_mode: if cli.literal_emissive { EmissiveMode::Literal } else { EmissiveMode::Auto },
         drop_outline_parts: !cli.keep_outlines,
         ..Default::default()

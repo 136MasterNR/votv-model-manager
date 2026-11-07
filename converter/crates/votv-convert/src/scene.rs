@@ -31,6 +31,9 @@ pub struct Material {
     pub base_tex: Option<usize>,
     /// 0-255 like trimesh; `None` when the file does not state it.
     pub base_factor: Option<[u8; 4]>,
+    /// The same factor as stated in the file (linear colour space, 0-1). glTF colour factors are linear while the diffuse atlas is sRGB,
+    /// so flat colours must be converted, not multiplied by 255.
+    pub base_linear: Option<[f64; 4]>,
     pub alpha_mode: Option<String>,
     pub emissive_tex: Option<usize>,
     pub emissive_factor: Option<[f64; 3]>,
@@ -178,6 +181,14 @@ fn read_materials(
         // Older KHR_materials_pbrSpecularGlossiness materials: use the diffuse texture / colour as base colour (what trimesh
         // did). Specular and glossiness are not converted.
         let mut base_factor = base_factor;
+        let lin_of = |v: &serde_json::Value| -> Option<[f64; 4]> {
+            let a = v.as_array()?;
+            if a.len() != 4 {
+                return None;
+            }
+            Some([json_f64(&a[0]).unwrap_or(1.0), json_f64(&a[1]).unwrap_or(1.0), json_f64(&a[2]).unwrap_or(1.0), json_f64(&a[3]).unwrap_or(1.0)])
+        };
+        let mut base_linear = pbr_raw.and_then(|p| p.get("baseColorFactor")).and_then(|v| lin_of(v));
         if let Some(sg) = rm.and_then(|x| x.get("extensions")).and_then(|e| e.get("KHR_materials_pbrSpecularGlossiness")) {
             spec_gloss += 1;
             if base_tex.is_none() {
@@ -192,6 +203,9 @@ fn read_materials(
                         .map(|t| t.source().index())
                         .filter(|&i| textures.get(i).map(|x| x.is_some()).unwrap_or(false));
                 }
+            }
+            if base_linear.is_none() {
+                base_linear = sg.get("diffuseFactor").and_then(|v| lin_of(v));
             }
             if base_factor.is_none() {
                 base_factor = sg.get("diffuseFactor").and_then(|v| v.as_array()).filter(|a| a.len() == 4).map(|a| {
@@ -228,6 +242,7 @@ fn read_materials(
                     ctx.info(DiagCode::EmissiveUsedAsColour, format!("material {name:?}: its colour is stored in the emissive texture (toon-shader export), so that texture is used as the diffuse colour and no glow is baked."));
                     base_tex = Some(ei);
                     base_factor = base_factor.map(|f| [255, 255, 255, f[3]]); // keep only its alpha
+                    base_linear = base_linear.map(|f| [1.0, 1.0, 1.0, f[3]]);
                     emissive_tex = None;
                     emissive_factor = None;
                 } else if same_as_base {
@@ -247,6 +262,7 @@ fn read_materials(
             name,
             base_tex,
             base_factor,
+            base_linear,
             alpha_mode,
             emissive_tex,
             emissive_factor,

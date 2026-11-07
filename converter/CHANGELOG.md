@@ -52,6 +52,17 @@ only edits `crates/votv-convert` and `crates/votv-model-core`; the GUI is not pa
     texels are semi-transparent, otherwise it is a cutout (hair cards, soft edges) or opaque. (Miyu's hair, BLEND with alpha 0.99, was dropped.)
   - New option `drop_outline_parts` (default true): parts whose material or object name contains "outline" (toon inverted-hull shells) are removed (`outline_dropped`).
   - New `DiagCode`s: `EmissiveUsedAsColour`, `EmissiveDuplicateIgnored`, `EmissiveIgnored`, `OutlineDropped`. CLI: `--literal-emissive`, `--keep-outlines`.
+- **Colour spaces (found with a Porsche 930 whose paint rendered black):** glTF colour factors are *linear*; the atlas is sRGB. Flat colours from `baseColorFactor`
+  / spec-gloss `diffuseFactor` and flat emissive colours are now encoded properly (a 0.096 paint is 86/255, it was 24), and the factor-times-texture
+  options (`apply_base_color_factor`, the emissive factor) multiply in linear space. `Material::base_linear` keeps the exact factor. Output differs from the Python converter here on purpose.
+- **New option `metallic_scale`** (0-1, default 1 = as authored): multiplies every metallic value in the pbr map. The car's paint had a metallic texture of 255 with no factor (glTF default 1).
+  Fully metallic surfaces have no diffuse light in UE, so they may look black in game; the printer thumbnail is known to show them dark, the world print is unconfirmed (open question in votv-printer-internals).
+  The default stays 1 until an in-game test says otherwise. Part of the atlas cache key. CLI: `--metallic-scale`.
+- **Layered translucent shells (Porsche 930, in-game black car):** the alpha *factor* of BLEND/MASK materials is now always baked into the atlas tile, independent of
+  `apply_base_color_factor`. The car's clear-coat layer (`coat`: BLEND, factor alpha 0.24, a texture without alpha, a second shell of 43,713 triangles over the paint) used to be
+  written fully opaque and hid the paint; now its tile alpha is 61/255, below VotV's alpha clip, so it disappears. (Fixing the paint colour alone changed nothing visible for this reason.)
+- **`apply_base_color_factor` now defaults to true** (breaking default; CLI flag is now `--ignore-base-color-factor`): textures are multiplied by `baseColorFactor` in linear space like every
+  glTF viewer does. The same car had a 3 x 6 m ground quad (white texture x near-black factor) that came out as a white patch.
 - CLI is dev-only and no longer a default feature.
 - `show_collision` pushes the red copy only as far as needed to avoid z-fighting (auto: 0.2% of model size, 0.05-0.5 cm; was 1.5%, min 0.5 cm,
   with corners up to 2.5x further) and has a new option `show_collision_offset: Option<f64>` (cm, `None` = auto). Output of `--show-coll`

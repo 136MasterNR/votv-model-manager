@@ -543,7 +543,7 @@ fn colour_stored_in_the_emissive_slot_becomes_the_diffuse() {
     // literal mode keeps the file's own reading (near-black diffuse, glowing)
     let lit = ConvertOptions { emissive_mode: EmissiveMode::Literal, ..no_coll() };
     let r = conv(&data("selflit"), Some("literal"), &out, &lit).unwrap();
-    assert!(r.stats.has_emissive && mean_diffuse(&out, "literal") < 30.0);
+    assert!(r.stats.has_emissive && mean_diffuse(&out, "literal") < 80.0, "literal: the dark flat factor, not the emissive texture");
 }
 
 #[test]
@@ -583,4 +583,64 @@ fn toon_outline_shells_are_dropped_unless_asked_to_keep_them() {
     assert!(has(&r, "outline_dropped"));
     let keep = ConvertOptions { drop_outline_parts: false, ..no_coll() };
     assert_eq!(conv(&data("outline"), Some("kept"), &out, &keep).unwrap().stats.parts, 2);
+}
+
+// ---------------------------------------------------------------- colour spaces and metallic
+
+#[test]
+fn flat_colours_are_converted_from_linear_to_srgb() {
+    let out = tmp("flatpaint");
+    conv(&data("flat_paint"), None, &out, &no_coll()).unwrap();
+    // factor ~0.09 (linear) is about 86/255 in sRGB; multiplying by 255 (the old behaviour) gave 24
+    let m = mean_diffuse(&out, "flat_paint");
+    assert!((80.0..=95.0).contains(&m), "flat paint came out as {m}");
+}
+
+#[test]
+fn metallic_values_can_be_scaled_down() {
+    let center_r = |out: &Path, name: &str| {
+        let img = image::open(out.join(name).join(format!("pbr_{name}.png"))).unwrap().to_rgb8();
+        img.get_pixel(img.width() / 2, img.height() / 2)[0]
+    };
+    let out = tmp("metal");
+    conv(&data("metal_paint"), None, &out, &no_coll()).unwrap();
+    assert_eq!(center_r(&out, "metal_paint"), 255, "authored value kept by default");
+    let o = ConvertOptions { metallic_scale: 0.3, ..no_coll() };
+    conv(&data("metal_paint"), Some("scaled"), &out, &o).unwrap();
+    assert!((center_r(&out, "scaled") as i32 - 77).abs() <= 1);
+    assert_eq!(conv(&data("metal_paint"), Some("bad"), &out, &ConvertOptions { metallic_scale: 1.5, ..no_coll() }).unwrap_err().kind(), "invalid_option");
+}
+
+#[test]
+fn metallic_scale_is_part_of_the_atlas_cache_key() {
+    let out = tmp("metalcache");
+    let cache = ConvertCache::new();
+    let run = |o: &ConvertOptions| conv_with(&data("metal_paint"), Some("m"), &out, o, &Hooks::default().with_cache(cache.clone())).unwrap();
+    run(&no_coll());
+    let r = run(&ConvertOptions { metallic_scale: 0.5, ..no_coll() });
+    assert_eq!(r.cache_hits.iter().map(|s| s.as_str()).collect::<Vec<_>>(), ["scene"]);
+}
+
+// ---------------------------------------------------------------- layered shells and colour factors
+
+#[test]
+fn translucent_shells_are_clipped_instead_of_becoming_a_solid_skin() {
+    let out = tmp("coat");
+    let r = conv(&data("coat_shell"), None, &out, &no_coll()).unwrap();
+    assert_eq!(r.stats.parts, 2);
+    let img = image::open(out.join("coat_shell/diffuse_coat_shell.png")).unwrap().to_rgba8();
+    // factor alpha 0.24 is baked into the coat's tile (about 61/255, below VotV's alpha clip), the paint stays opaque
+    assert!(img.pixels().any(|p| (58..=64).contains(&p[3])), "coat tile alpha must be about 0.24 * 255");
+    assert!(img.pixels().any(|p| p[3] == 255));
+}
+
+#[test]
+fn base_colour_factors_are_applied_by_default() {
+    assert!(ConvertOptions::default().apply_base_color_factor);
+    let out = tmp("shadow");
+    conv(&data("ground_shadow"), None, &out, &no_coll()).unwrap();
+    assert!(mean_diffuse(&out, "ground_shadow") < 30.0, "white texture x near-black factor is a dark shadow, not a white patch");
+    let raw = ConvertOptions { apply_base_color_factor: false, ..no_coll() };
+    conv(&data("ground_shadow"), Some("raw"), &out, &raw).unwrap();
+    assert!(mean_diffuse(&out, "raw") > 200.0);
 }

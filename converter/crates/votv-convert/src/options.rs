@@ -76,8 +76,14 @@ pub struct ConvertOptions {
     pub max_atlas_size: u32,
     /// Remove parts whose material is transparent or masked. VotV has no alpha blending.
     pub drop_transparent: bool,
-    /// Multiply base colour textures by `baseColorFactor` (the glTF spec). Off to stay identical to the old Python converter.
+    /// Multiply base colour textures by `baseColorFactor` in linear space (the glTF rule; on by default). Many exports use a white or grey texture with a
+    /// colour or a near-black factor (shadow blobs, tinted plastics), which looks wrong when the factor is ignored. The alpha factor of BLEND/MASK materials is
+    /// always applied, independent of this option. The old Python converter ignored the factor.
     pub apply_base_color_factor: bool,
+    /// Multiplier (0-1) for every metallic value written to the pbr map; 1 = as authored. A fully metallic surface (car paint, chrome) has no
+    /// diffuse light and relies on reflections, so it can look dark or black in game; the printer thumbnail is known to show it dark, whether the
+    /// world print does is unconfirmed. Lower it (for example 0.3) to keep such models readable; 0 makes everything non-metallic.
+    pub metallic_scale: f64,
     /// See [`EmissiveMode`]. Fixes models whose colour is stored as emission (flat or black diffuse, whole model glowing).
     pub emissive_mode: EmissiveMode,
     /// Remove parts whose material or object name contains "outline": toon outline shells (inverted hulls) are only meant to be
@@ -140,7 +146,8 @@ impl Default for ConvertOptions {
             max_tile_size: 1024,
             max_atlas_size: 4096,
             drop_transparent: false,
-            apply_base_color_factor: false,
+            apply_base_color_factor: true,
+            metallic_scale: 1.0,
             emissive_mode: EmissiveMode::Auto,
             drop_outline_parts: true,
             generate_collision: true,
@@ -219,6 +226,9 @@ impl ConvertOptions {
             if !(o.is_finite() && (0.0..=100.0).contains(&o)) {
                 return bad("show-collision offset must be between 0 and 100 cm");
             }
+        }
+        if !(self.metallic_scale.is_finite() && (0.0..=1.0).contains(&self.metallic_scale)) {
+            return bad("metallic scale must be between 0 and 1");
         }
         if self.write_icon && !(16..=1024).contains(&self.icon_size) {
             return bad("icon size must be 16-1024");

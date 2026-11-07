@@ -233,7 +233,7 @@ fn build_atlas(opts: &ConvertOptions, sc: &Scene, parts: &[Part], ctx: &mut Ctx)
     if normal_img.is_some() {
         ctx.info(DiagCode::NormalAtlas, format!("Built matching normal atlas ({}/{} materials have a normal map).", count(atlas::has_normal), swatches.len()));
     }
-    let pbr_img = atlas::build_map(MapKind::Pbr, &slot_mat, &placements, &sc.textures);
+    let pbr_img = atlas::build_map(MapKind::Pbr { metallic_scale: opts.metallic_scale }, &slot_mat, &placements, &sc.textures);
     if pbr_img.is_some() {
         ctx.info(DiagCode::PbrAtlas, format!("Built matching pbr atlas ({}/{} materials have roughness data).", count(atlas::has_roughness), swatches.len()));
     }
@@ -583,6 +583,7 @@ pub fn convert_with(opts: &ConvertOptions, input: &Path, hooks: &Hooks) -> Resul
         flip_green: opts.flip_normal_green,
         emissive: opts.emissive,
         show_collision: opts.show_collision,
+        metallic_scale_bits: opts.metallic_scale.to_bits(),
     };
     let atlas_entry: Arc<AtlasEntry> = match cache.as_ref().and_then(|c| c.atlas(&akey)) {
         Some(a) => {

@@ -227,6 +227,14 @@ The icon box shows the model's icon. **Capture as icon** renders a new one. To u
 
 Drop another `.glb` while you are editing to run the same settings on a different model.
 
+### Posing a character
+
+The converter only sees the pose that is saved in the exported file. It ignores animations and shape keys.
+
+1. Pose your character in **Pose Mode**.
+2. Select the mesh and choose **Object > Apply > Visual Geometry to Mesh**.
+3. Delete the armature.
+
 ### Logs
 
 The logs button at the bottom left of the preview shows what the converter did: the input, any failure, every message of the last run and which stages were reused.

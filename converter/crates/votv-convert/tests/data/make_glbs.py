@@ -199,3 +199,21 @@ o = trimesh.creation.box(extents=(1.05, 1.05, 1.05))
 o.visual = TextureVisuals(uv=np.zeros((8, 2)), material=pbr("Hero_Outline", baseColorFactor=[0.06, 0.06, 0.06, 1.0]))
 sc.add_geometry(o, node_name="outline_shell"); sc.export(f"{out}/outline.glb")
 print("added emission/alpha fixtures")
+
+
+# 20-21. a car-paint like material: dark flat colour (linear factor, no texture) and a fully metallic metallicRoughness texture
+mr = np.zeros((32, 32, 3), np.uint8); mr[..., 1] = 200; mr[..., 2] = 255      # G roughness 200, B metallic 255
+export("flat_paint", pbr("flatpaint", baseColorFactor=[0.0959, 0.0889, 0.0862, 1.0]))
+trimesh.Scene(box_with(PBRMaterial(name="metalpaint", baseColorFactor=[0.0959, 0.0889, 0.0862, 1.0], metallicRoughnessTexture=Image.fromarray(mr)))).export(f"{out}/metal_paint.glb")
+print("added paint fixtures")
+
+
+# 22-23. layered clear-coat shell (BLEND, factor alpha 0.24, opaque texture) over a flat paint; ground shadow (white texture x near-black factor)
+sc = trimesh.Scene()
+sc.add_geometry(box_with(pbr("paint2", baseColorFactor=[0.8, 0.1, 0.1, 1.0])), node_name="body")
+shell = box_with(pbr("coat2", baseColorTexture=grad(64, 64), baseColorFactor=[0.68, 0.68, 0.68, 0.24], alphaMode="BLEND"))
+shell.apply_scale(1.01)
+sc.add_geometry(shell, node_name="coat"); sc.export(f"{out}/coat_shell.glb")
+sh = np.full((64, 64, 4), 255, np.uint8); sh[:40, :, 3] = 0       # white, 62% transparent
+export("ground_shadow", pbr("shadow", baseColorTexture=Image.fromarray(sh), baseColorFactor=[0.0007, 0.0007, 0.0007, 1.0], alphaMode="BLEND"))
+print("added coat/shadow fixtures")

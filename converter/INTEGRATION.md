@@ -46,6 +46,13 @@ Never prints, prompts or exits. `ConvertError::kind()` is a stable tag; `Display
 if a real glow map is wrongly reinterpreted. Their effects appear as `Info` diagnostics (`emissive_used_as_colour`, `emissive_duplicate_ignored`, `emissive_ignored`,
 `outline_dropped`, `alpha_cutout`), which the GUI can show in its log. `inspect()` lists the emission ones in `hints` so the panel can explain them before converting.
 
+## Metallic
+`metallic_scale` (0-1, default 1 = as authored) is a conversion option (slider). Reported problem: a car converted with metallic textures of 255 (car paint, chrome) came out black *in the game*.
+Two causes were found and are separate: flat colours were not converted from linear to sRGB (fixed, no option), and fully metallic surfaces have no diffuse light (UE: diffuse = base x (1 - metallic)),
+so they depend entirely on reflections. Whether metallic 255 is dark in the game's *world* print (not only in the printer thumbnail, where it is known to be dark) is still unconfirmed, so the
+default stays at 1 until a test says otherwise. Note for the manager's own preview: Bevy's `StandardMaterial` without an environment map also renders metallic 1 as black, which is a separate,
+preview-only effect (an environment light fixes it); do not use the preview to judge metallic.
+
 ## Properties panel (generated from the schema)
 Conversion settings (`Options`) and model properties (`Options.properties`, type `votv_model_core::PropertiesCfg`) are separate. The GUI should show them in
 separate sections. Build the properties section from the schema instead of one hand-written row per field:
