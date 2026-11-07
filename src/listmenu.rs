@@ -542,7 +542,9 @@ fn perform(action: ToolAction, bar: &mut Toolbar, lib: &mut Library, layout: &mu
             for &i in &sel {
                 icons::queue_regen(pipe, lib.entries[i].dir.clone(), Some(i), lib.generation); // the list's icon: the game's own view
             }
-            layout.notice = Some(if sel.len() == 1 { "Regenerating the icon...".to_string() } else { format!("Regenerating {} icons...", sel.len()) });
+            // No notice here: the status line shows "Regenerating..." from the pipeline's own state (`ui::status_text`) and
+            // drops it when the last icon is written. A stored notice stayed on screen forever.
+            layout.notice = None;
         }
         ToolAction::Lock => {
             let targets: Vec<usize> = sel.iter().copied().filter(|&i| find_glb(&lib.entries[i].dir).is_some()).collect();

@@ -866,8 +866,9 @@ pub struct LampGizmos;
 /// Marks where the lamp is: a cross with a small diamond in the lamp's colour, a thin line from the model's origin (the
 /// point the offset is measured from, shown as a small grey cross) to it. In the editor it follows the CURRENT Lamp
 /// offset values at once (the real preview light moves only after the model has been converted and reloaded); on the
-/// list screen it uses the saved properties. Nothing is drawn when the model is not a lamp. The offset is in raw model
-/// axes, so the model root's transform (which also does Z-up) puts it in the world, as for the hull outlines.
+/// list screen it uses the saved properties. Nothing is drawn when the model is not a lamp. The cfg's offset is in Unreal
+/// axes (Z up); `scene::lamp_offset_to_model` turns it into the model's axes, and the model root's transform (which also
+/// does Z-up) then puts it in the world, as for the hull outlines.
 #[allow(clippy::too_many_arguments)]
 pub fn lamp_gizmos(
     opts: Res<Opts>,
@@ -889,10 +890,13 @@ pub fn lamp_gizmos(
             let p = &conv.opts.properties;
             p.is_lamp.then(|| {
                 (
-                    Vec3::new(
-                        p.lamp_offset.x as f32,
-                        p.lamp_offset.y as f32,
-                        p.lamp_offset.z as f32,
+                    crate::scene::lamp_offset_to_model(
+                        Vec3::new(
+                            p.lamp_offset.x as f32,
+                            p.lamp_offset.y as f32,
+                            p.lamp_offset.z as f32,
+                        ),
+                        opts.z_up,
                     ),
                     [p.lamp_color.r as f32, p.lamp_color.g as f32, p.lamp_color.b as f32],
                 )
@@ -901,7 +905,7 @@ pub fn lamp_gizmos(
             let m = &sc.loaded.data;
             (m.num("is_lamp", 0.0) != 0.0).then(|| {
                 let c = m.color("lamp_color").to_linear();
-                (m.vec3("lamp_offset"), [c.red, c.green, c.blue])
+                (crate::scene::lamp_offset_to_model(m.vec3("lamp_offset"), opts.z_up), [c.red, c.green, c.blue])
             })
         }
     });

@@ -119,6 +119,16 @@ impl IconPipe {
         self.current.take().map(|c| c.ents).unwrap_or_default()
     }
 
+    /// How many icon regenerations are still to finish: the queued ones plus the one loading, rendering or being saved.
+    /// The status line derives its "Regenerating..." text from this, so the text goes away by itself when the last
+    /// icon is written (it used to be a notice that nothing ever cleared).
+    pub fn regen_remaining(&self) -> usize {
+        // `screens` is not counted: it also counts the list's own icon saves, and while a regeneration's screenshot is
+        // pending its `current` job is still alive anyway.
+        let running = self.regen_rx.is_some() || self.current.as_ref().map(|c| c.regen).unwrap_or(false);
+        self.regen_queue.len() + usize::from(running)
+    }
+
     /// An icon regeneration is queued, rendering or being saved.
     pub fn regen_busy(&self) -> bool {
         self.regen_rx.is_some()

@@ -214,6 +214,21 @@ pub fn build_mesh(s: &RawSection, o: &Opts, tangents: bool) -> Mesh {
     m
 }
 
+/// Where the game puts a `lamp_offset` (Unreal axes, cm: X forward, Y right, Z UP) in the model's own axes, which is
+/// where the preview draws it. The converter writes the three numbers to `properties.cfg` untouched and the game reads
+/// them as Unreal axes, so the preview must convert them. An OBJ is Y-up: Unreal (x, y, z) = OBJ (x, z, y), i.e. the Y
+/// and Z entries swap (reported by the user: Y and Z were swapped in-game compared with the editor). A Z-up model is
+/// already in Unreal axes (the root's rotation stands it up), so its offset passes through.
+/// NOTE: the icon rig (`gamerig::ue_to_model`) measured a different horizontal mapping, but its picture is the same under
+/// both (its doc says so); the lamp is the first thing that tells them apart.
+pub fn lamp_offset_to_model(ue: Vec3, z_up: bool) -> Vec3 {
+    if z_up {
+        ue
+    } else {
+        Vec3::new(ue.x, ue.z, ue.y)
+    }
+}
+
 pub fn root_transform(m: &ModelData, z_up: bool) -> Transform {
     root_for(Vec3::from(m.center), z_up)
 }
@@ -458,7 +473,8 @@ pub fn spawn_model(
         mat_handles.push(mat);
     }
 
-    // Lamp (setProps: only when is_lamp). Offset is in raw model axes; intensity units differ from Unreal (see LAMP_GAIN).
+    // Lamp (setProps: only when is_lamp). The offset is in Unreal axes in the cfg (Z up): `lamp_offset_to_model` puts it in the
+    // model's axes. Intensity units differ from Unreal (see LAMP_GAIN).
     if full && m.num("is_lamp", 0.0) != 0.0 {
         let lamp = commands
             .spawn((
@@ -469,7 +485,7 @@ pub fn spawn_model(
                     shadows_enabled: m.num("lamp_shadows", 0.0) != 0.0,
                     ..default()
                 },
-                Transform::from_translation(m.vec3("lamp_offset")),
+                Transform::from_translation(lamp_offset_to_model(m.vec3("lamp_offset"), o.z_up)),
                 layer.clone(),
             ))
             .id();
@@ -483,5 +499,23 @@ pub fn spawn_model(
         orig_diffuse,
         orig_color,
         spec: spec_per_section,
+    }
+}
+
+#[cfg(test)]
+mod lamp_axis_tests {
+    use super::*;
+
+    #[test]
+    fn lamp_offset_z_is_up_in_a_y_up_model() {
+        // 100 cm up in Unreal (Z) is along the model's Y; Unreal Y (sideways) is the model's Z; X is unchanged.
+        assert_eq!(lamp_offset_to_model(Vec3::new(0.0, 0.0, 100.0), false), Vec3::new(0.0, 100.0, 0.0));
+        assert_eq!(lamp_offset_to_model(Vec3::new(0.0, 100.0, 0.0), false), Vec3::new(0.0, 0.0, 100.0));
+        assert_eq!(lamp_offset_to_model(Vec3::new(100.0, 0.0, 0.0), false), Vec3::new(100.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn a_z_up_model_keeps_the_offset() {
+        assert_eq!(lamp_offset_to_model(Vec3::new(1.0, 2.0, 3.0), true), Vec3::new(1.0, 2.0, 3.0));
     }
 }

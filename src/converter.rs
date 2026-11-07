@@ -217,6 +217,30 @@ impl ConvertState {
             })
     }
 
+    /// True when `dir` is the library folder of the model open in the editor: the folder it was saved to in this session,
+    /// or (an Edit session) the folder its input .glb sits in. Compared without regard to case (Windows).
+    fn owns_dir(&self, dir: &Path) -> bool {
+        let same = |a: &Path, b: &Path| {
+            a.to_string_lossy().eq_ignore_ascii_case(&b.to_string_lossy())
+                || matches!((std::fs::canonicalize(a), std::fs::canonicalize(b)), (Ok(x), Ok(y)) if x == y)
+        };
+        self.saved.as_deref().is_some_and(|s| same(s, dir))
+            || self.input.as_deref().and_then(|p| p.parent()).is_some_and(|p| same(p, dir))
+    }
+
+    /// True when saving the open model under `name` would land on ANOTHER model of the library: the folder exists and is
+    /// not this model's own. (`install` replaces whatever sits in the target folder, so a rename onto an existing model
+    /// used to wipe that model.) `name` is sanitised the way the converter will.
+    pub fn name_taken(&self, root: &Path, name: &str) -> bool {
+        let clean = votv_convert::sanitize_name(name);
+        if clean.is_empty() {
+            return false;
+        }
+        // The folder the save would really replace (`resolve_name`: the name itself when free or ours, else `<name>_gen`).
+        let target = root.join(resolve_name(root, &clean));
+        target.exists() && !self.owns_dir(&target)
+    }
+
     /// A new file was dropped on the converter screen: swap the input, keep the parameters, the old model on the
     /// stage and the camera, and regenerate (handy after re-exporting a model from Blender).
     pub fn replace_input(&mut self, path: PathBuf) {
@@ -330,6 +354,13 @@ impl ConvertState {
                     .map(|s| s.to_string_lossy().into_owned())
                     .unwrap_or_default()
             }));
+        // A name the user set (rename, Edit, replace) must not land on another model: `install` would replace it.
+        if self.opts.output_name.is_some() && self.name_taken(&root, &base_name) {
+            self.status = Status::Failed(format!(
+                "A model named \"{base_name}\" already exists. Choose another name."
+            ));
+            return;
+        }
         opts.output_name = Some(resolve_name(&root, &base_name));
         opts.output_dir = dir.clone();
         opts.write_sidecar = true; // marks the folder as ours and lets Edit restore these options
@@ -799,5 +830,41 @@ mod tests {
         assert!(s.input.is_none() && s.pending.is_none());
         assert_eq!(s.status, Status::Idle);
         assert!(s.session > before);
+    }
+
+    fn temp_library(tag: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("votv_rename_test_{tag}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for m in ["alpha", "beta"] {
+            std::fs::create_dir_all(root.join(m)).unwrap();
+            std::fs::write(root.join(m).join("votv_convert.json"), b"{}").unwrap(); // "ours": install would replace it
+            std::fs::write(root.join(m).join(format!("{m}.glb")), b"x").unwrap();
+        }
+        root
+    }
+
+    #[test]
+    fn renaming_onto_another_model_is_refused() {
+        let root = temp_library("other");
+        let mut s = ConvertState::new();
+        // Edit session on "alpha": the input .glb sits inside its folder.
+        s.input = Some(root.join("alpha").join("alpha.glb"));
+        assert!(s.name_taken(&root, "beta"), "beta is another model: must not be replaced");
+        assert!(!s.name_taken(&root, "alpha"), "the model's own folder is fine");
+        assert!(!s.name_taken(&root, "gamma"), "a free name is fine");
+        assert!(!s.name_taken(&root, ""), "empty names are handled elsewhere");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_saved_session_owns_its_folder() {
+        let root = temp_library("saved");
+        let mut s = ConvertState::new();
+        s.input = Some(PathBuf::from("dropped.glb")); // a fresh drop, not yet in the library
+        assert!(s.name_taken(&root, "beta"));
+        s.saved = Some(root.join("beta")); // after its first save the session's own folder is beta
+        assert!(!s.name_taken(&root, "beta"));
+        assert!(s.name_taken(&root, "alpha"));
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

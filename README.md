@@ -105,6 +105,8 @@ Drop model folders or `.zip` files onto the list, or use the **Drop folders / .z
 
 The **Export** button above the preview saves a model as a `.zip` that you can share safely: it does not contain the editable `.glb`, so others cannot use it to edit your model.
 
+Select several tiles (Ctrl + click, Shift + click for a range) and the button reads **Export Bundle**: it saves all the selected models into ONE `.zip`, each in its own folder, with the same rule (no editable `.glb`).
+
 ![](readme/export.gif)
 
 ## The 3D preview
@@ -217,7 +219,7 @@ The box under the model name lists what will be in the game for the current sett
 
 ### Rename in the editor
 
-The pencil button next to the model name starts the rename: the name becomes a text field with all its text selected. A name that does not fit scrolls to its end while the pointer is over it and glides back when it leaves.
+The pencil button next to the model name starts the rename: the name becomes a text field with all its text selected. A name that does not fit scrolls to its end while the pointer is over it and glides back when it leaves. A name that another model already uses is refused (the status line says so); the other model is never replaced.
 
 ### Icon of the model
 

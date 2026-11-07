@@ -44,7 +44,7 @@ use bevy::{
 use crate::blender::{self, BlenderButton};
 use crate::conv_ui::{self, ConvUiRefs, EditTarget, ParamRows};
 use crate::converter::{load_sidecar, ConvertState};
-use crate::export::{self, HeaderExport};
+use crate::export::{self, HeaderExport, HeaderExportLabel};
 use crate::icon_font::{g, icon, IconFont};
 use crate::icons::{start_worker, IconPipe};
 use crate::listmenu::{self, DropTile, SectionEmpty, SectionHeader};
@@ -900,7 +900,8 @@ pub fn setup(
             HeaderExport,
             Button,
             Node {
-                width: Val::Px(78.0),
+                width: Val::Auto, // "Export" for one model, "Export Bundle" for several (export::button_system)
+                padding: UiRect::horizontal(Val::Px(10.0)),
                 height: Val::Px(22.0),
                 justify_content: JustifyContent::Center,
                 align_items: AlignItems::Center,
@@ -921,6 +922,7 @@ pub fn setup(
         &mut commands,
         btn_export,
         (
+            HeaderExportLabel,
             txt("Export", 13.0, EXPORT_COL),
             Node {
                 margin: UiRect::left(Val::Px(4.0)),
@@ -2099,8 +2101,16 @@ pub fn status_text(
     } else {
         ""
     };
+    let regen = pipe.regen_remaining();
     let s = if let Some(n) = &layout.notice {
         n.clone()
+    } else if regen > 0 {
+        // Icon regeneration in progress (list toolbar or the editor); gone as soon as the last icon is saved.
+        if regen == 1 {
+            "Regenerating the icon...".to_string()
+        } else {
+            format!("Regenerating icons...   |   {regen} left")
+        }
     } else if layout.converter {
         conv.summary()
     } else {

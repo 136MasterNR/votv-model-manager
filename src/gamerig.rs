@@ -46,7 +46,7 @@ pub const FILL_INTENSITY: f32 = 1.0;
 /// How many degrees both lights are raised above the positions the Blueprint gives them (`Rig::lights`). 0 is exactly
 /// the game's numbers. The user compared renders with the game and found that 12 degrees higher looks more accurate; it
 /// applies to the generated icons and to the preview alike. Positive = higher, negative = lower (never above 80).
-pub const LIGHT_RAISE_DEG: f32 = 12.0;
+pub const LIGHT_RAISE_DEG: f32 = 9.0;
 /// Bevy lux that give the same diffuse brightness as one unit of Unreal light intensity (see the module notes).
 pub const LUX_PER_UNIT: f32 = 1072.0;
 /// Bevy's default exposure (ev100 9.7) divides every light value by about 998 before it reaches the screen.
