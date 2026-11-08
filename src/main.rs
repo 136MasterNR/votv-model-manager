@@ -401,7 +401,7 @@ fn main() {
         .add_systems(
             Update,
             (
-                export::button_system.after(conv_ui::edit_button_system),
+                export::button_system,
                 export::poll_system,
                 import::poll_system,
                 blender::button_system,

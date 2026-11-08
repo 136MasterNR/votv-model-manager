@@ -3,8 +3,8 @@
 //! `.glb` and the `votv_convert.json` sidecar (what the game needs is the `.obj`, `.mtl`, textures, `icon.png`,
 //! `properties.cfg`, ...). Started from the Export button above the preview.
 //!
-//! With several tiles selected the same button reads **Export Bundle** and writes ONE `.zip` holding every selected model
-//! as its own `<model name>/...` folder (same filter, same save dialog).
+//! Any model can be exported, EDITABLE or not. With several tiles selected the same button reads **Export Bundle** and
+//! writes ONE `.zip` holding every selected model as its own `<model name>/...` folder (same filter, same save dialog).
 //!
 //! The dialog and the zipping run on their own thread (a native dialog blocks), the result comes back through a channel
 //! and `poll_system` puts it on the status line.
@@ -21,7 +21,6 @@ use std::{
 
 use bevy::prelude::*;
 
-use crate::conv_ui::EditTarget;
 use crate::{Layout, Library};
 
 /// Marker of the Export button above the preview (shown while a model is selected).
@@ -157,7 +156,7 @@ fn write_bundle(models: &[(PathBuf, String)], dest: &Path) -> Result<usize, Stri
 }
 
 /// The models the Export button acts on: every selected model when several are selected (a bundle), else the one
-/// selected model.
+/// selected model. Any model can be exported, EDITABLE or not.
 fn export_dirs(lib: &Library) -> Vec<PathBuf> {
     let many: Vec<PathBuf> = lib
         .selection
@@ -182,18 +181,17 @@ pub fn on_header_click(t: Trigger<Pointer<Click>>, lib: Res<Library>, mut job: R
     start(&mut job, export_dirs(&lib));
 }
 
-/// Shows the Export button for an EDITABLE model (one with a saved .glb) on the list screen, as the Edit button, and
-/// for any selection of two or more models, where it reads "Export Bundle". Runs after `conv_ui::edit_button_system`,
-/// which keeps `EditTarget` up to date.
+/// Shows the Export button on the list screen while at least one model is selected (EDITABLE or not); it reads "Export
+/// Bundle" when two or more are selected.
 pub fn button_system(
-    target: Res<EditTarget>,
     layout: Res<Layout>,
     lib: Res<Library>,
     mut q: Query<&mut Node, With<HeaderExport>>,
     mut labels: Query<&mut Text, With<HeaderExportLabel>>,
 ) {
-    let several = lib.selection.iter().filter(|&&i| i < lib.entries.len()).count() > 1;
-    let shown = layout.preview_open && !layout.converter && (several || target.0.is_some());
+    let count = export_dirs(&lib).len();
+    let several = count > 1;
+    let shown = layout.preview_open && !layout.converter && count > 0;
     let want = if shown { Display::Flex } else { Display::None };
     for mut n in &mut q {
         if n.display != want {

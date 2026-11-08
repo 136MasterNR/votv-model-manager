@@ -249,6 +249,57 @@ pub fn root_for(center: Vec3, z_up: bool) -> Transform {
 }
 
 pub fn to_bevy_image(p: &PoolImg, usage: RenderAssetUsages) -> Image {
+    image_from(p, p.img.data.clone(), usage)
+}
+
+/// An emissive map as the preview shows it for an emissive strength ABOVE 1.0.
+///
+/// The game multiplies the map by the strength. A plain multiply makes a bright colour overflow: (1, 0.2, 0.05) x 5 is
+/// (5, 1, 0.25), and the display then clips (or tone-maps) every channel on its own, so the glow slides to yellow and
+/// white and loses its colour. Here the strength is applied to each pixel in LINEAR colour, and a pixel whose brightest
+/// channel goes over 1 is scaled back so that channel is exactly 1: the hue of every pixel is kept, dim pixels still
+/// get brighter, and the brightest ones simply stay at full colour. Alpha is untouched. The result is a normal sRGB map
+/// that the material then uses with a factor of 1.0.
+fn boost_emissive(data: &[u8], strength: f32) -> Vec<u8> {
+    let decode: [f32; 256] = std::array::from_fn(|i| {
+        let c = i as f32 / 255.0;
+        if c <= 0.04045 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    });
+    // linear 0..1 in 4096 steps -> sRGB byte (fine enough: one step is below one sRGB level even in the darks)
+    let encode: Vec<u8> = (0..4096)
+        .map(|i| {
+            let l = i as f32 / 4095.0;
+            let c = if l <= 0.003_130_8 {
+                l * 12.92
+            } else {
+                1.055 * l.powf(1.0 / 2.4) - 0.055
+            };
+            (c * 255.0).round().clamp(0.0, 255.0) as u8
+        })
+        .collect();
+    let mut out = data.to_vec();
+    for px in out.chunks_exact_mut(4) {
+        let mut v = [
+            decode[px[0] as usize] * strength,
+            decode[px[1] as usize] * strength,
+            decode[px[2] as usize] * strength,
+        ];
+        let peak = v[0].max(v[1]).max(v[2]);
+        if peak > 1.0 {
+            v = v.map(|c| c / peak);
+        }
+        for (dst, c) in px.iter_mut().zip(v) {
+            *dst = encode[(c * 4095.0).round() as usize];
+        }
+    }
+    out
+}
+
+fn image_from(p: &PoolImg, data: Vec<u8>, usage: RenderAssetUsages) -> Image {
     let format = match p.kind {
         Kind::Diffuse | Kind::Emissive => TextureFormat::Rgba8UnormSrgb,
         _ => TextureFormat::Rgba8Unorm,
@@ -260,7 +311,7 @@ pub fn to_bevy_image(p: &PoolImg, usage: RenderAssetUsages) -> Image {
             depth_or_array_layers: 1,
         },
         TextureDimension::D2,
-        p.img.data.clone(),
+        data,
         format,
         usage,
     );
@@ -374,11 +425,17 @@ pub fn spawn_model(
     } else {
         RenderAssetUsages::RENDER_WORLD
     };
+    let strength = m.num("emissive_strength", 1.0);
     let handles: Vec<Handle<Image>> = l
         .pool
         .iter()
         .map(|p| {
-            let mut img = to_bevy_image(p, usage);
+            // Above 1.0 the strength is baked into the emissive map with its hue kept (see `boost_emissive`).
+            let mut img = if p.kind == Kind::Emissive && strength > 1.0 {
+                image_from(p, boost_emissive(&p.img.data, strength), usage)
+            } else {
+                to_bevy_image(p, usage)
+            };
             if !full {
                 // The game's icon samples the full texture at 128 px without averaging: unfiltered, no mips.
                 if let ImageSampler::Descriptor(d) = &mut img.sampler {
@@ -390,7 +447,6 @@ pub fn spawn_model(
             images.add(img)
         })
         .collect();
-    let strength = m.num("emissive_strength", 1.0);
 
     let root = commands
         .spawn((
@@ -440,7 +496,9 @@ pub fn spawn_model(
             emissive: if has_emissive {
                 // Alpha 0 = "do not multiply by the camera exposure" (pbr_functions.wgsl: mix(1.0, exposure, emissive.a)).
                 // With alpha 1 (what `LinearRgba::rgb` gives) the default exposure (about 1/1000) made the glow invisible.
-                LinearRgba::new(strength, strength, strength, 0.0)
+                // Up to 1.0 the strength is the material's factor; above it, it is already in the map (boost_emissive).
+                let f = strength.min(1.0);
+                LinearRgba::new(f, f, f, 0.0)
             } else {
                 LinearRgba::BLACK
             },
@@ -504,6 +562,29 @@ pub fn spawn_model(
 #[cfg(test)]
 mod lamp_axis_tests {
     use super::*;
+
+    #[test]
+    fn a_strong_emissive_keeps_its_hue() {
+        // One orange pixel (sRGB 255, 51, 13, alpha 200) and one dim grey one (sRGB 60, alpha 255).
+        let data = [255u8, 51, 13, 200, 60, 60, 60, 255];
+        let out = boost_emissive(&data, 5.0);
+        // The orange pixel overflows, so it is scaled back to its own colour (within rounding)...
+        for (a, b) in out[..3].iter().zip(&data[..3]) {
+            assert!((*a as i32 - *b as i32).abs() <= 2, "{out:?}");
+        }
+        // ...not clipped towards yellow/white: red stays far above green.
+        assert!(out[0] > out[1] * 3);
+        // The dim grey pixel gets brighter (linear x5) but stays grey.
+        assert!(out[4] > 60 && out[4] == out[5] && out[5] == out[6]);
+        // Alpha is untouched.
+        assert_eq!((out[3], out[7]), (200, 255));
+        // Strength 1 changes nothing (within rounding).
+        let same = boost_emissive(&data, 1.0);
+        assert!(same
+            .iter()
+            .zip(&data)
+            .all(|(a, b)| (*a as i32 - *b as i32).abs() <= 1));
+    }
 
     #[test]
     fn lamp_offset_z_is_up_in_a_y_up_model() {
