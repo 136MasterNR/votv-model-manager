@@ -407,15 +407,13 @@ pub fn spawn_model(
         let get = |k: Kind| l.tex[i][k.idx()].map(|ix| handles[ix].clone());
         let diffuse = get(Kind::Diffuse);
         // The game's icon material also has the pbr map (metals come out dark: no reflections in the capture); the icon
-        // render only loads the diffuse and pbr maps, so the other two are None there anyway.
+        // render loads the diffuse, pbr and emissive maps (`icons.rs::ICON_KINDS`).
         let pbr = get(Kind::Pbr);
         let spec = l.tex[i][Kind::Pbr.idx()].map(|ix| mean_specular(&l.pool[ix].img.data));
         spec_per_section.push(spec);
-        let (normal, emissive) = if full {
-            (get(Kind::Normal), get(Kind::Emissive))
-        } else {
-            (None, None)
-        };
+        // The normal map is left out of the icons (128 px), the emissive map is not: a lamp has to glow in its icon.
+        let normal = if full { get(Kind::Normal) } else { None };
+        let emissive = get(Kind::Emissive);
         let plain = diffuse.is_none() && !full; // icon of an untextured section: neutral grey
         let has_emissive = emissive.is_some();
         let base = if plain {
@@ -475,7 +473,8 @@ pub fn spawn_model(
 
     // Lamp (setProps: only when is_lamp). The offset is in Unreal axes in the cfg (Z up): `lamp_offset_to_model` puts it in the
     // model's axes. Intensity units differ from Unreal (see LAMP_GAIN).
-    if full && m.num("is_lamp", 0.0) != 0.0 {
+    // (Icons get the lamp light too, so a lamp lights its own icon like in the preview.)
+    if m.num("is_lamp", 0.0) != 0.0 {
         let lamp = commands
             .spawn((
                 PointLight {

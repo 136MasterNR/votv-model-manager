@@ -4,7 +4,7 @@
 //!   decodes it (resized to 128 px if needed) and the tile shows it as it is.
 //! * Otherwise a worker thread parses the model and decodes only its diffuse and pbr maps (at most 1024 px), and the main
 //!   thread renders ONE model at a time into a 128x128 image (own render layer, 4x MSAA (ICON_MSAA), no shadows, no
-//!   normal/emissive maps) with the game's own camera and lights (gamerig.rs) on its grey background, waits a few
+//!   normal map) with the game's own camera and lights (gamerig.rs) on its grey background, waits a few
 //!   frames, then despawns the temporary scene.
 //!   The finished image is shown by the tile, and saved as `icon.png` in the model folder (a screenshot of the image).
 //! * "Regenerate icon" in the converter queues the same render for a saved model and overwrites its `icon.png`.
@@ -41,8 +41,9 @@ const MIN_ICON_SECS: f32 = 0.15; // also wait this long, so a very fast display 
 pub const ICON_FILE: &str = "icon.png";
 
 /// The maps an icon render needs: the game's icon material uses the diffuse and pbr maps (metals come out dark, there
-/// is no environment light); normal and emissive are skipped (128 px, and the game's emissive strength is 0 there).
-const ICON_KINDS: &[Kind] = &[Kind::Diffuse, Kind::Pbr];
+/// is no environment light); the emissive map is loaded too so that lamps glow in their icon; the normal map is skipped
+/// (128 px).
+const ICON_KINDS: &[Kind] = &[Kind::Diffuse, Kind::Pbr, Kind::Emissive];
 /// Longest side of the textures decoded for an icon. The game samples the full texture at 128 px (sharp, aliased),
 /// so icons keep far more than 128 px of it and sample it without filtering (see `scene::spawn_model`).
 /// Anti-aliasing of the icon render: 4x MSAA smooths the model's edges (the game's own icon has none; the user asked for it).
