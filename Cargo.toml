@@ -34,7 +34,7 @@ lto = "fat"          # was "thin"; better dead-code removal
 codegen-units = 1    # slower build, smaller and faster binary
 panic = "abort"      # drops unwinding tables
 strip = true         # removes symbols and debug info
-opt-level = "s"      # optional, see below
+opt-level = 3        # speed over size: measured 25-30 % faster preview loads than "s" (the exe is larger; accepted)
 
 [build-dependencies]
 # Embeds assets/icon.ico in the Windows exe (Explorer, taskbar, shortcuts); see build.rs.

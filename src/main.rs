@@ -293,29 +293,30 @@ fn main() {
     for p in default_candidates() {
         candidates.push((p, "default"));
     }
-    let mut counted = Vec::new();
-    for (p, why) in &candidates {
-        let n = if p.is_dir() {
-            model::scan_models(p).len()
-        } else {
-            0
-        };
-        println!(
-            "[manager] candidate ({why}): {}  ->  {}",
-            p.display(),
-            if p.is_dir() {
-                format!("{n} models")
+    // The first candidate that holds a model wins, so the ones after it are never looked at; and only WHETHER a folder has
+    // a model matters, not how many: `model::has_any_model` stops at the first one instead of scanning the library.
+    let pick = {
+        let mut first_with_models: Option<usize> = None;
+        for (i, (p, why)) in candidates.iter().enumerate() {
+            let state = if first_with_models.is_some() {
+                "not checked"
+            } else if !p.is_dir() {
+                "not found"
+            } else if model::has_any_model(p) {
+                first_with_models = Some(i);
+                "has models"
             } else {
-                "not found".into()
-            }
-        );
-        counted.push(n);
-    }
-    let pick = counted
-        .iter()
-        .position(|&n| n > 0)
-        .or_else(|| candidates.iter().position(|(p, _)| p.is_dir()))
-        .unwrap_or(0);
+                "no models"
+            };
+            println!(
+                "[manager] candidate ({why}): {}  ->  {state}",
+                p.display()
+            );
+        }
+        first_with_models
+            .or_else(|| candidates.iter().position(|(p, _)| p.is_dir()))
+            .unwrap_or(0)
+    };
     let root = candidates
         .get(pick)
         .map(|(p, _)| p.clone())

@@ -144,21 +144,139 @@ impl SortMode {
 }
 
 /// Orders `entries` by list section, then inside each section by that section's mode (newest first for the dates).
+///
+/// The key (section, the section's date newest first, lowercase name) is computed once per entry by
+/// `sort_by_cached_key`; the comparator it replaces built two lowercase `String`s on every comparison. The order is the
+/// same, and the sort is stable, so entries with equal keys keep their input order as before. (`str::to_lowercase` is
+/// kept on purpose: unlike a per-character lowercase it treats a final capital sigma the way the old comparator did.)
 pub fn sort_entries(entries: &mut [Entry], modes: [SortMode; 2]) {
-    entries.sort_by(|a, b| {
-        let by_name = || a.name.to_lowercase().cmp(&b.name.to_lowercase());
-        a.section()
-            .cmp(&b.section())
-            .then_with(|| match modes[a.section() as usize] {
-                SortMode::LastAdded => b.added.cmp(&a.added).then_with(by_name),
-                SortMode::LastModified => b.modified.cmp(&a.modified).then_with(by_name),
-                SortMode::NameAz => by_name(),
-            })
+    entries.sort_by_cached_key(|e| {
+        let when = match modes[e.section() as usize] {
+            SortMode::LastAdded => e.added,
+            SortMode::LastModified => e.modified,
+            // The same for every entry of the section, so only the name decides.
+            SortMode::NameAz => std::time::UNIX_EPOCH,
+        };
+        (e.section(), std::cmp::Reverse(when), e.name.to_lowercase())
     });
 }
 
-/// (added, modified) of a model folder: the folder's creation time, and the newest file change in it (not counting
-/// `icon.png`, which the app rewrites on its own).
+/// Name of the file a model is disabled with: `<x>.obj` -> `<x>.obj.disabled`.
+pub const DISABLED_SUFFIX: &str = ".disabled";
+
+/// `name` ends with `suffix`, ignoring ASCII case, without allocating (the old check lowercased a `String` per file).
+/// Same answer as `name.to_string_lossy().to_lowercase().ends_with(suffix)` for the ASCII suffixes used here (`.glb`,
+/// `.obj.disabled`): no non-ASCII character lowercases to one of their letters, and a lossy replacement character can
+/// never be part of an ASCII suffix.
+fn name_ends_with(name: &std::ffi::OsStr, suffix: &str) -> bool {
+    let (n, s) = (name.as_encoded_bytes(), suffix.as_bytes());
+    n.len() >= s.len() && n[n.len() - s.len()..].eq_ignore_ascii_case(s)
+}
+
+/// What one pass over a model folder found: the three flags `scan_models` needs and the newest change of any file in
+/// it, not counting `icon.png` (the app rewrites that on its own). `newest` stays `UNIX_EPOCH` when no file had a time.
+struct FolderScan {
+    has_obj: bool,
+    has_obj_disabled: bool,
+    has_glb: bool,
+    newest: std::time::SystemTime,
+}
+
+/// One `read_dir` of a model folder instead of three or four. `None` when the folder cannot be read: the old code then
+/// found neither an `.obj` nor an `.obj.disabled` and skipped the folder, and so does the caller.
+fn scan_folder(dir: &Path) -> Option<FolderScan> {
+    let rd = fs::read_dir(dir).ok()?;
+    let mut s = FolderScan {
+        has_obj: false,
+        has_obj_disabled: false,
+        has_glb: false,
+        newest: std::time::UNIX_EPOCH,
+    };
+    for f in rd.flatten() {
+        let name = f.file_name();
+        // The old test, on the same last path component: extension "obj" in any case. A directory called `x.obj`
+        // counts too, and so does nothing without an extension (a file named just `.obj`).
+        if !s.has_obj
+            && Path::new(&name)
+                .extension()
+                .and_then(|x| x.to_str())
+                .is_some_and(|x| x.eq_ignore_ascii_case("obj"))
+        {
+            s.has_obj = true;
+        }
+        if !s.has_obj_disabled && name_ends_with(&name, ".obj.disabled") {
+            s.has_obj_disabled = true;
+        }
+        if !s.has_glb && name_ends_with(&name, ".glb") {
+            s.has_glb = true;
+        }
+        if !name.eq_ignore_ascii_case("icon.png") {
+            if let Some(t) = f.metadata().ok().and_then(|m| m.modified().ok()) {
+                s.newest = s.newest.max(t);
+            }
+        }
+    }
+    Some(s)
+}
+
+/// Every sub-folder of `root` that contains an .obj file. Fast: no model is parsed.
+pub fn scan_models(root: &Path) -> Vec<Entry> {
+    let mut out = Vec::new();
+    let Ok(rd) = fs::read_dir(root) else {
+        return out;
+    };
+    for e in rd.flatten() {
+        // The folder test comes from the directory listing (no extra syscall). A symlink, a junction or an unknown
+        // type asks the filesystem like the old `path().is_dir()` did, which follows links.
+        let is_dir = match e.file_type() {
+            Ok(t) if t.is_dir() => true,
+            Ok(t) if t.is_file() => false,
+            _ => e.path().is_dir(),
+        };
+        if !is_dir {
+            continue;
+        }
+        let name = e.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with('.') {
+            continue; // hidden folders: the converter's temp folders
+        }
+        let p = e.path();
+        let Some(scan) = scan_folder(&p) else {
+            continue;
+        };
+        // An .obj makes a model; without one an `.obj.disabled` makes a disabled model; a `.glb` makes it editable.
+        if !scan.has_obj && !scan.has_obj_disabled {
+            continue;
+        }
+        // (added, modified): the folder's creation time, and the newest file change in it (`added` if no file had one).
+        let added = fs::metadata(&p)
+            .ok()
+            .and_then(|m| m.created().ok().or_else(|| m.modified().ok()))
+            .unwrap_or(std::time::UNIX_EPOCH);
+        let modified = if scan.newest == std::time::UNIX_EPOCH {
+            added
+        } else {
+            scan.newest
+        };
+        out.push(Entry {
+            name: name.into_owned(),
+            dir: p,
+            added,
+            modified,
+            disabled: !scan.has_obj,
+            editable: scan.has_glb,
+        });
+    }
+    // Sorted by list section (editable, models), then by name; the key is computed once per entry.
+    out.sort_by_cached_key(|e| (e.section(), e.name.to_lowercase()));
+    out
+}
+
+// ---- reference implementation and equivalence tests (test builds only) ----
+
+/// The pre-H1 `entry_times`, verbatim: part of the reference below, and no longer used by the program.
+#[cfg(test)]
 fn entry_times(dir: &Path) -> (std::time::SystemTime, std::time::SystemTime) {
     use std::time::UNIX_EPOCH;
     let meta = fs::metadata(dir).ok();
@@ -186,9 +304,8 @@ fn entry_times(dir: &Path) -> (std::time::SystemTime, std::time::SystemTime) {
     (added, modified)
 }
 
-/// Name of the file a model is disabled with: `<x>.obj` -> `<x>.obj.disabled`.
-pub const DISABLED_SUFFIX: &str = ".disabled";
-
+/// The pre-H1 `has_file_ending`, verbatim: part of the reference below, and no longer used by the program.
+#[cfg(test)]
 fn has_file_ending(dir: &Path, ends: &str) -> bool {
     fs::read_dir(dir)
         .map(|d| {
@@ -202,8 +319,9 @@ fn has_file_ending(dir: &Path, ends: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Every sub-folder of `root` that contains an .obj file. Fast: no model is parsed.
-pub fn scan_models(root: &Path) -> Vec<Entry> {
+/// The pre-H1 `scan_models`, verbatim apart from its name: the reference of `scan_equivalence_tests`.
+#[cfg(test)]
+fn scan_models_reference(root: &Path) -> Vec<Entry> {
     let mut out = Vec::new();
     let Ok(rd) = fs::read_dir(root) else {
         return out;
@@ -259,6 +377,403 @@ pub fn scan_models(root: &Path) -> Vec<Entry> {
     // Sorted by list section (editable, models), then by name.
     out.sort_by_key(|e| (e.section(), e.name.to_lowercase()));
     out
+}
+
+#[cfg(test)]
+mod scan_equivalence_tests {
+    use super::*;
+    use std::time::{Duration, UNIX_EPOCH};
+
+    fn temp(name: &str) -> PathBuf {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let d = std::env::temp_dir().join(format!(
+            "votv_scan_{}_{}_{}",
+            name,
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn touch(root: &Path, rel: &str) {
+        let p = root.join(rel);
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(p, b"x").unwrap();
+    }
+
+    /// Everything a scan returns, as comparable values (`Entry` itself has no `PartialEq`).
+    type Row = (String, PathBuf, bool, bool, std::time::SystemTime, std::time::SystemTime);
+
+    fn rows(v: &[Entry]) -> Vec<Row> {
+        v.iter()
+            .map(|e| (e.name.clone(), e.dir.clone(), e.disabled, e.editable, e.added, e.modified))
+            .collect()
+    }
+
+    fn assert_same(root: &Path) {
+        assert_eq!(rows(&scan_models(root)), rows(&scan_models_reference(root)));
+    }
+
+    #[test]
+    fn a_mixed_tree_gives_the_same_entries_as_the_reference() {
+        let root = temp("mixed");
+        for f in [
+            "plain/a.obj",
+            "plain/a.mtl",
+            "upper/A.OBJ",
+            "mixed/x.Obj",
+            "disabled/x.obj.disabled",
+            "disabled_upper/X.OBJ.DISABLED",
+            "both/a.obj",
+            "both/a.obj.disabled",
+            "glb/a.obj",
+            "glb/a.GLB",
+            "glb_only/a.glb",
+            "disabled_glb/a.obj.disabled",
+            "disabled_glb/b.Glb",
+            "dotobj/.obj",
+            "iconly/icon.png",
+            ".hidden/a.obj",
+            "loose.obj",
+        ] {
+            touch(&root, f);
+        }
+        fs::create_dir_all(root.join("empty")).unwrap();
+        // A DIRECTORY called thing.obj counts as an .obj, as it always did.
+        fs::create_dir_all(root.join("dirobj/thing.obj")).unwrap();
+        assert_same(&root);
+        // And the result is what the rules say: editable models first, then by lowercase name.
+        let found: Vec<(String, bool, bool)> = scan_models(&root)
+            .iter()
+            .map(|e| (e.name.clone(), e.disabled, e.editable))
+            .collect();
+        let want = [
+            ("disabled_glb", true, true),
+            ("glb", false, true),
+            ("both", false, false),
+            ("dirobj", false, false),
+            ("disabled", true, false),
+            ("disabled_upper", true, false),
+            ("mixed", false, false),
+            ("plain", false, false),
+            ("upper", false, false),
+        ];
+        let want: Vec<(String, bool, bool)> =
+            want.iter().map(|(n, d, e)| (n.to_string(), *d, *e)).collect();
+        assert_eq!(found, want);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_modified_time_ignores_icon_png() {
+        let root = temp("modified");
+        for f in ["m/a.obj", "m/b.mtl", "m/icon.png"] {
+            touch(&root, f);
+        }
+        let set = |rel: &str, secs: u64| -> bool {
+            fs::OpenOptions::new()
+                .write(true)
+                .open(root.join(rel))
+                .and_then(|f| f.set_modified(UNIX_EPOCH + Duration::from_secs(secs)))
+                .is_ok()
+        };
+        let ok = set("m/a.obj", 1_000) && set("m/b.mtl", 2_000) && set("m/icon.png", 9_000_000_000);
+        assert_same(&root);
+        if ok {
+            let e = scan_models(&root);
+            assert_eq!(e.len(), 1);
+            // The newest file that is not the icon, not the icon's far-future time.
+            assert_eq!(e[0].modified, UNIX_EPOCH + Duration::from_secs(2_000));
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_missing_root_and_a_root_without_models_give_nothing() {
+        let root = temp("none");
+        assert!(scan_models(&root.join("does_not_exist")).is_empty());
+        assert_same(&root.join("does_not_exist"));
+        touch(&root, "only_a_file.txt");
+        fs::create_dir_all(root.join("folder_without_models")).unwrap();
+        assert!(scan_models(&root).is_empty());
+        assert_same(&root);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_model_folder_is_followed_and_a_dangling_link_is_skipped() {
+        let root = temp("links");
+        let real = temp("links_real");
+        touch(&real, "m/a.obj");
+        std::os::unix::fs::symlink(real.join("m"), root.join("linked")).unwrap();
+        std::os::unix::fs::symlink(real.join("missing"), root.join("dangling")).unwrap();
+        assert_same(&root);
+        let names: Vec<String> = scan_models(&root).iter().map(|e| e.name.clone()).collect();
+        assert_eq!(names, ["linked"]);
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&real);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_file_name_that_is_not_utf8_is_handled_like_before() {
+        use std::os::unix::ffi::OsStrExt;
+        let root = temp("utf8");
+        let m = root.join("m");
+        fs::create_dir_all(&m).unwrap();
+        fs::write(m.join(std::ffi::OsStr::from_bytes(b"a.o\xffj")), b"x").unwrap();
+        fs::write(m.join("b.obj.DISABLED"), b"x").unwrap();
+        assert_same(&root);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn name_ends_with_ignores_ascii_case_and_short_names() {
+        let o = std::ffi::OsStr::new;
+        assert!(name_ends_with(o("a.GLB"), ".glb"));
+        assert!(name_ends_with(o(".glb"), ".glb"));
+        assert!(!name_ends_with(o("glb"), ".glb"));
+        assert!(!name_ends_with(o("a.glb.bak"), ".glb"));
+        assert!(name_ends_with(o("x.OBJ.Disabled"), ".obj.disabled"));
+    }
+
+    // ---- sort_entries against the comparator it replaced ----
+
+    fn at(secs: u64) -> std::time::SystemTime {
+        UNIX_EPOCH + Duration::from_secs(secs)
+    }
+
+    /// Entries with ties on purpose: names that differ only in case, a final capital sigma, equal times.
+    fn sample() -> Vec<Entry> {
+        [
+            "beta",
+            "Alpha",
+            "alpha",
+            "Zed",
+            "\u{c4}PFEL",
+            "\u{e4}pfel",
+            // a word ending in a capital sigma next to its lowercase spelling (final sigma): the lowercase of the
+            // whole string differs from the per-character lowercase, which is why `to_lowercase` stays
+            "\u{39f}\u{394}\u{3a5}\u{3a3}\u{3a3}\u{395}\u{3a5}\u{3a3}",
+            "\u{39f}\u{3b4}\u{3c5}\u{3c3}\u{3c3}\u{3b5}\u{3c5}\u{3c2}",
+            "\u{391}\u{3a3}",
+            "\u{3b1}\u{3c2}",
+            "x1",
+            "X1",
+            "mm",
+        ]
+        .iter()
+        .enumerate()
+        .map(|(i, n)| Entry {
+            name: n.to_string(),
+            dir: PathBuf::from(format!("{i:02}")),
+            added: at((i * 7 % 5) as u64),
+            modified: at((i * 3 % 4) as u64),
+            disabled: i % 4 == 0,
+            editable: i % 3 == 0,
+        })
+        .collect()
+    }
+
+    /// The comparator `sort_entries` had before H1, verbatim.
+    fn old_sort_entries(entries: &mut [Entry], modes: [SortMode; 2]) {
+        entries.sort_by(|a, b| {
+            let by_name = || a.name.to_lowercase().cmp(&b.name.to_lowercase());
+            a.section()
+                .cmp(&b.section())
+                .then_with(|| match modes[a.section() as usize] {
+                    SortMode::LastAdded => b.added.cmp(&a.added).then_with(by_name),
+                    SortMode::LastModified => b.modified.cmp(&a.modified).then_with(by_name),
+                    SortMode::NameAz => by_name(),
+                })
+        });
+    }
+
+    #[test]
+    fn sort_entries_orders_like_the_comparator_it_replaced() {
+        use super::SortMode::{LastAdded, LastModified, NameAz};
+        let all = [LastAdded, LastModified, NameAz];
+        for m0 in all {
+            for m1 in all {
+                let modes = [m0, m1];
+                let mut new = sample();
+                sort_entries(&mut new, modes);
+                let mut old = sample();
+                old_sort_entries(&mut old, modes);
+                let order = |v: &[Entry]| v.iter().map(|e| e.dir.clone()).collect::<Vec<_>>();
+                assert_eq!(order(&new), order(&old), "modes {modes:?}");
+            }
+        }
+    }
+}
+
+/// True when `scan_models(root)` would find at least one model: a sub-folder of `root` (symlinks followed, as
+/// `Path::is_dir` does) whose name does not start with a dot and that holds an entry with the extension `obj` (any case)
+/// or an entry whose name ends with `.obj.disabled` (any case). It stops at the first one, so the start-up check of the
+/// candidate folders costs one folder listing instead of a scan of the whole library. It deliberately repeats the tests
+/// of `scan_models` instead of calling its helpers (another change may remove or rename them); the unit tests below keep
+/// the two in step.
+pub fn has_any_model(root: &Path) -> bool {
+    let Ok(rd) = fs::read_dir(root) else {
+        return false;
+    };
+    rd.flatten().any(|e| {
+        let p = e.path();
+        if !p.is_dir() || e.file_name().to_string_lossy().starts_with('.') {
+            return false; // a loose file, or a hidden folder (the converter's temp folders)
+        }
+        let Ok(inner) = fs::read_dir(&p) else {
+            return false;
+        };
+        inner.flatten().any(|f| {
+            let is_obj = f
+                .path()
+                .extension()
+                .and_then(|x| x.to_str())
+                .is_some_and(|x| x.eq_ignore_ascii_case("obj"));
+            is_obj
+                || f.file_name()
+                    .to_string_lossy()
+                    .to_lowercase()
+                    .ends_with(".obj.disabled")
+        })
+    })
+}
+
+#[cfg(test)]
+mod has_any_model_tests {
+    use super::*;
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    /// A fresh temp folder that is removed again when it goes out of scope.
+    struct Tree(PathBuf);
+
+    impl Tree {
+        fn new() -> Tree {
+            static NEXT: AtomicU32 = AtomicU32::new(0);
+            let dir = std::env::temp_dir().join(format!(
+                "votv-has-any-model-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::SeqCst)
+            ));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            Tree(dir)
+        }
+
+        /// Creates a file (and the folders above it).
+        fn file(&self, rel: &str) -> &Tree {
+            let p = self.0.join(rel);
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(&p, b"x").unwrap();
+            self
+        }
+
+        fn dir(&self, rel: &str) -> &Tree {
+            fs::create_dir_all(self.0.join(rel)).unwrap();
+            self
+        }
+    }
+
+    impl Drop for Tree {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// The contract: `has_any_model` says exactly what `scan_models` finds, and `expected` is what both must say.
+    /// (`scan_models` is compared as it is when the test runs; its body may be rewritten, its output may not change.)
+    fn check(root: &Path, expected: bool) {
+        let scanned = !scan_models(root).is_empty();
+        assert_eq!(scanned, expected, "scan_models gives a different answer for {}", root.display());
+        assert_eq!(
+            has_any_model(root),
+            scanned,
+            "has_any_model disagrees with scan_models for {}",
+            root.display()
+        );
+    }
+
+    #[test]
+    fn an_empty_root_has_no_model() {
+        let t = Tree::new();
+        check(&t.0, false);
+    }
+
+    #[test]
+    fn a_missing_root_has_no_model() {
+        let t = Tree::new();
+        check(&t.0.join("missing"), false);
+    }
+
+    #[test]
+    fn a_file_instead_of_a_folder_has_no_model() {
+        let t = Tree::new();
+        t.file("not_a_folder.txt");
+        check(&t.0.join("not_a_folder.txt"), false);
+    }
+
+    #[test]
+    fn loose_files_in_the_root_do_not_count() {
+        let t = Tree::new();
+        t.file("loose.obj").file("readme.txt");
+        check(&t.0, false);
+    }
+
+    #[test]
+    fn a_hidden_folder_does_not_count() {
+        let t = Tree::new();
+        t.file(".converter_tmp/a.obj");
+        check(&t.0, false);
+    }
+
+    #[test]
+    fn an_obj_in_any_case_counts() {
+        let t = Tree::new();
+        t.file("chair/chair.OBJ");
+        check(&t.0, true);
+    }
+
+    #[test]
+    fn a_disabled_obj_in_any_case_counts() {
+        let t = Tree::new();
+        t.file("lamp/lamp.OBJ.Disabled");
+        check(&t.0, true);
+    }
+
+    #[test]
+    fn a_glb_an_icon_or_an_empty_folder_alone_do_not_count() {
+        let t = Tree::new();
+        t.file("a/m.glb").file("b/icon.png").dir("c");
+        check(&t.0, false);
+    }
+
+    #[test]
+    fn a_folder_called_x_obj_counts_like_a_file_called_x_obj() {
+        // `scan_models` tests the extension of every entry, folders included; the quirk is kept on purpose.
+        let t = Tree::new();
+        t.dir("e/inner.obj");
+        check(&t.0, true);
+    }
+
+    #[test]
+    fn a_file_called_dot_obj_has_no_extension() {
+        let t = Tree::new();
+        t.file("f/.obj");
+        check(&t.0, false);
+    }
+
+    #[test]
+    fn a_model_after_folders_without_one_is_found() {
+        let t = Tree::new();
+        t.dir("a").file("b/readme.txt").file("z/z.obj");
+        check(&t.0, true);
+    }
 }
 
 // ---------------------------------------------------------------------------------------------

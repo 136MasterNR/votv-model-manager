@@ -103,7 +103,7 @@ Drop model folders or `.zip` files onto the list, or use the **Drop folders / .z
 
 ### Export a model to share
 
-The **Export** button above the preview saves a model as a `.zip` that you can share safely: it does not contain the editable `.glb`, so others cannot use it to edit your model.
+The **Export** button above the preview (it appears while a model is selected, EDITABLE or not) saves a model as a `.zip` that you can share safely: it does not contain the editable `.glb`, so others cannot use it to edit your model.
 
 Select several tiles (Ctrl + click, Shift + click for a range) and the button reads **Export Bundle**: it saves all the selected models into ONE `.zip`, each in its own folder, with the same rule (no editable `.glb`).
 
