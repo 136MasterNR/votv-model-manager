@@ -84,6 +84,10 @@ pub struct ConvertOptions {
     /// diffuse light and relies on reflections, so it can look dark or black in game; the printer thumbnail is known to show it dark, whether the
     /// world print does is unconfirmed. Lower it (for example 0.3) to keep such models readable; 0 makes everything non-metallic.
     pub metallic_scale: f64,
+    /// Upper limit (0-1) for metallic values in the pbr map, applied after `metallic_scale`. Default 0.75. Measured in the game with a calibration print:
+    /// a fully metallic (255) surface with low or medium roughness renders dark, like a mirror of the dark environment, while 192 (0.75) and below
+    /// still look like the paint colour. Raise it to 1 for authored chrome at the cost of dark metal. Factor-only materials are never metallic.
+    pub metallic_max: f64,
     /// See [`EmissiveMode`]. Fixes models whose colour is stored as emission (flat or black diffuse, whole model glowing).
     pub emissive_mode: EmissiveMode,
     /// Remove parts whose material or object name contains "outline": toon outline shells (inverted hulls) are only meant to be
@@ -148,6 +152,7 @@ impl Default for ConvertOptions {
             drop_transparent: false,
             apply_base_color_factor: true,
             metallic_scale: 1.0,
+            metallic_max: 0.75,
             emissive_mode: EmissiveMode::Auto,
             drop_outline_parts: true,
             generate_collision: true,
@@ -226,6 +231,9 @@ impl ConvertOptions {
             if !(o.is_finite() && (0.0..=100.0).contains(&o)) {
                 return bad("show-collision offset must be between 0 and 100 cm");
             }
+        }
+        if !(self.metallic_max.is_finite() && (0.0..=1.0).contains(&self.metallic_max)) {
+            return bad("metallic max must be between 0 and 1");
         }
         if !(self.metallic_scale.is_finite() && (0.0..=1.0).contains(&self.metallic_scale)) {
             return bad("metallic scale must be between 0 and 1");

@@ -63,6 +63,10 @@ only edits `crates/votv-convert` and `crates/votv-model-core`; the GUI is not pa
   written fully opaque and hid the paint; now its tile alpha is 61/255, below VotV's alpha clip, so it disappears. (Fixing the paint colour alone changed nothing visible for this reason.)
 - **`apply_base_color_factor` now defaults to true** (breaking default; CLI flag is now `--ignore-base-color-factor`): textures are multiplied by `baseColorFactor` in linear space like every
   glTF viewer does. The same car had a 3 x 6 m ground quad (white texture x near-black factor) that came out as a white patch.
+- **New option `metallic_max`** (0-1, default **0.75**), applied after `metallic_scale`: measured in the game with the calibration grid, a fully metallic (255) surface with low or
+  medium roughness renders dark (a mirror of the dark environment; the ground texture shows in it) while 192 (0.75) and below still look like the paint colour, and roughness 220 at 255 looks
+  orange. The Porsche's paint (metallic 255, roughness 255 x 0.4248 = 108) was exactly the dark case. Metallic values above the cap are written as the cap. Set `metallic_max` to 1 for authored
+  chrome. Nothing was misread and no shader is missing: it is ordinary PBR in an environment with little to reflect. CLI: `--metallic-max`.
 - CLI is dev-only and no longer a default feature.
 - `show_collision` pushes the red copy only as far as needed to avoid z-fighting (auto: 0.2% of model size, 0.05-0.5 cm; was 1.5%, min 0.5 cm,
   with corners up to 2.5x further) and has a new option `show_collision_offset: Option<f64>` (cm, `None` = auto). Output of `--show-coll`

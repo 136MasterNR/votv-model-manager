@@ -604,11 +604,15 @@ fn metallic_values_can_be_scaled_down() {
     };
     let out = tmp("metal");
     conv(&data("metal_paint"), None, &out, &no_coll()).unwrap();
-    assert_eq!(center_r(&out, "metal_paint"), 255, "authored value kept by default");
+    assert_eq!(center_r(&out, "metal_paint"), 191, "capped at 0.75: fully metallic smooth surfaces render dark in the game");
+    let uncapped = ConvertOptions { metallic_max: 1.0, ..no_coll() };
+    conv(&data("metal_paint"), Some("uncapped"), &out, &uncapped).unwrap();
+    assert_eq!(center_r(&out, "uncapped"), 255, "authored value with the cap lifted");
     let o = ConvertOptions { metallic_scale: 0.3, ..no_coll() };
     conv(&data("metal_paint"), Some("scaled"), &out, &o).unwrap();
     assert!((center_r(&out, "scaled") as i32 - 77).abs() <= 1);
     assert_eq!(conv(&data("metal_paint"), Some("bad"), &out, &ConvertOptions { metallic_scale: 1.5, ..no_coll() }).unwrap_err().kind(), "invalid_option");
+    assert_eq!(conv(&data("metal_paint"), Some("bad2"), &out, &ConvertOptions { metallic_max: -0.1, ..no_coll() }).unwrap_err().kind(), "invalid_option");
 }
 
 #[test]

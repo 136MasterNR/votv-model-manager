@@ -7,7 +7,7 @@
 //! | stage      | reused while these stay the same                                                                                   |
 //! |------------|---------------------------------------------------------------------------------------------------------------------|
 //! | `scene`    | the file (path, size, modified time), `humanoid` and `emissive_mode`: skips reading the .glb and decoding its textures              |
-//! | `atlas`    | scene, `drop_transparent`, `max_tile_size`, `max_atlas_size`, `apply_base_color_factor`, `flip_normal_green`, `emissive`, `show_collision`, `metallic_scale`: skips baking/packing the atlases **and PNG compression** |
+//! | `atlas`    | scene, `drop_transparent`, `max_tile_size`, `max_atlas_size`, `apply_base_color_factor`, `flip_normal_green`, `emissive`, `show_collision`, `metallic_scale`, `metallic_max`: skips baking/packing the atlases **and PNG compression** |
 //! | `geometry` | atlas inputs plus `scale` and `write_icon`: skips UV cutting and OBJ text for the visible mesh                      |
 //! | `collision`| scene, `drop_transparent`, `collision_quality`, `vhacd_resolution`, `max_decomp_hulls`: skips VHACD (the slowest step) |
 //!
@@ -74,6 +74,7 @@ pub(crate) struct AtlasKey {
     pub emissive: bool,
     pub show_collision: bool,
     pub metallic_scale_bits: u64,
+    pub metallic_max_bits: u64,
 }
 
 pub(crate) struct AtlasEntry {

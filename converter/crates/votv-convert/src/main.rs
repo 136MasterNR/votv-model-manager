@@ -54,6 +54,9 @@ struct Cli {
     /// VHACD voxel resolution per axis
     #[arg(long, default_value_t = 64)]
     vhacd_resolution: u32,
+    /// upper limit 0-1 for metallic values in the pbr map (fully metallic renders dark in the game)
+    #[arg(long, default_value_t = 0.75)]
+    metallic_max: f64,
     /// multiplier 0-1 for metallic values in the pbr map (1 = as authored)
     #[arg(long, default_value_t = 1.0)]
     metallic_scale: f64,
@@ -170,6 +173,7 @@ fn main() {
         flip_normal_green: !cli.no_flip_normal_green,
         apply_base_color_factor: !cli.ignore_base_color_factor,
         metallic_scale: cli.metallic_scale,
+        metallic_max: cli.metallic_max,
         emissive_mode: if cli.literal_emissive { EmissiveMode::Literal } else { EmissiveMode::Auto },
         drop_outline_parts: !cli.keep_outlines,
         ..Default::default()

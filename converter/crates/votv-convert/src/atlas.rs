@@ -275,15 +275,16 @@ fn normal_tile(m: &Material, tx: &[Option<Tex>], flip_green: bool) -> Option<Rgb
 /// VotV layout: R = metallic, G = specular (constant 0.5), B = roughness.
 /// glTF layout is G = roughness, B = metallic, so channels are re-shuffled. A material with only
 /// factors contributes roughness only (metallic stays 0 on purpose, see lessons).
-fn pbr_tile(m: &Material, tx: &[Option<Tex>], metallic_scale: f64) -> Option<RgbaImage> {
+fn pbr_tile(m: &Material, tx: &[Option<Tex>], metallic_scale: f64, metallic_max: f64) -> Option<RgbaImage> {
     let spec = 128u8;
     if let Some(t) = tex(tx, m.mr_tex) {
         let rf = m.roughness.map(|v| v.clamp(0.0, 1.0)).unwrap_or(1.0);
         let mf = m.metallic.map(|v| v.clamp(0.0, 1.0)).unwrap_or(1.0) * metallic_scale.clamp(0.0, 1.0);
+        let cap = round_py(metallic_max.clamp(0.0, 1.0) * 255.0) as u8;
         let mut img = t.img.clone();
         for p in img.pixels_mut() {
             let (g, b) = (p[1], p[2]);
-            p[0] = round_py(b as f64 * mf) as u8;
+            p[0] = (round_py(b as f64 * mf).min(255.0) as u8).min(cap);
             p[1] = spec;
             p[2] = round_py(g as f64 * rf) as u8;
             p[3] = 255;
@@ -299,7 +300,7 @@ pub enum MapKind {
     Emissive,
     Normal { flip_green: bool },
     /// `metallic_scale` multiplies every metallic value written (1 = as authored).
-    Pbr { metallic_scale: f64 },
+    Pbr { metallic_scale: f64, metallic_max: f64 },
 }
 
 /// Build one extra atlas with the same layout as the diffuse atlas. Returns `None` when no
@@ -330,7 +331,7 @@ pub fn build_map(
         let tile = match kind {
             MapKind::Emissive => emissive_tile(m, textures),
             MapKind::Normal { flip_green } => normal_tile(m, textures, flip_green),
-            MapKind::Pbr { metallic_scale } => pbr_tile(m, textures, metallic_scale),
+            MapKind::Pbr { metallic_scale, metallic_max } => pbr_tile(m, textures, metallic_scale, metallic_max),
         };
         let Some(tile) = tile else { continue };
         let tile = if tile.dimensions() != (p.w, p.h) { resize_rgba(&tile, p.w, p.h) } else { tile };
