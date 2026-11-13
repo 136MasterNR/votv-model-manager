@@ -218,6 +218,7 @@ pub fn dialog_system(
     mut texts: Query<&mut Text>,
     mut text_colors: Query<&mut TextColor>,
 ) {
+    let _bench = crate::benchmark::sys("sys.dialog.dialog_system");
     if dlg.pending.is_some() {
         if keys.just_pressed(KeyCode::Escape) {
             dlg.pending = None;

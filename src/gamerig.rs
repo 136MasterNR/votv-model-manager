@@ -59,9 +59,24 @@ pub const AMBIENT_FRACTION: f32 = 0.33;
 /// The same thing as a Bevy `AmbientLight::brightness`: Bevy's ambient term is albedo x brightness x exposure, so the
 /// brightness that shows `AMBIENT_FRACTION` of the albedo is the fraction times the exposure divisor (about 329).
 pub const AMBIENT_BRIGHTNESS: f32 = AMBIENT_FRACTION * EXPOSURE_DIVISOR;
+/// The preview's world look (the default look, L): the game's WORLD renderer at night, not the printer's icon renderer.
+/// A surface the lights do not reach is nearly black there (a flashlight at night, no sky), so the ambient is small: 12 %
+/// of the surface colour, a little more than the game's none so the model never disappears. Icons keep
+/// `AMBIENT_FRACTION`. Measured on 2026-11-10 against in-game screenshots (Niko, crystal lamp): the preview's lifted
+/// blacks were a main reason for its lower contrast.
+pub const WORLD_AMBIENT_FRACTION: f32 = 0.12;
+pub const WORLD_AMBIENT_BRIGHTNESS: f32 = WORLD_AMBIENT_FRACTION * EXPOSURE_DIVISOR;
 /// The icon's background. The game's icon.png is pure black (measured; the Blueprint says 0.2 grey), but the manager
 /// leaves it transparent on the user's request: black or not, nothing is drawn behind the model.
 pub const BACKGROUND: Color = Color::NONE;
+
+/// The preview's head light (world look): a faint light along the view direction that gives smooth surfaces their white
+/// glint (see `preview::HeadLight`), in units of Unreal light intensity like the icon lights.
+pub const HEADLIGHT_INTENSITY: f32 = 0.25;
+
+pub fn headlight_lux() -> f32 {
+    HEADLIGHT_INTENSITY * LUX_PER_UNIT
+}
 
 pub fn fov_rad() -> f32 {
     FOV_DEG.to_radians()

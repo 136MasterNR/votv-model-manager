@@ -648,3 +648,69 @@ fn base_colour_factors_are_applied_by_default() {
     conv(&data("ground_shadow"), Some("raw"), &out, &raw).unwrap();
     assert!(mean_diffuse(&out, "raw") > 200.0);
 }
+
+// ---------------------------------------------------------------- PNG levels
+
+#[test]
+fn png_levels_change_only_the_file_size_never_the_pixels() {
+    let out = tmp("pnglevels");
+    let load = |name: &str| image::open(out.join(name).join(format!("diffuse_{name}.png"))).unwrap().to_rgba8();
+    let norm = |name: &str| image::open(out.join(name).join(format!("normal_{name}.png"))).unwrap().to_rgb8();
+    let mut results = Vec::new();
+    for (name, level) in [("best", PngLevel::Best), ("balanced", PngLevel::Balanced), ("fast", PngLevel::Fast)] {
+        let o = ConvertOptions { png_level: level, ..no_coll() };
+        let r = conv(&data("basic"), Some(name), &out, &o).unwrap();
+        assert!(r.stats.has_normal);
+        results.push((load(name), norm(name)));
+    }
+    assert!(results.iter().all(|r| r.0 == results[0].0 && r.1 == results[0].1), "decoded pixels must be identical at every level");
+}
+
+#[test]
+fn png_bytes_are_cached_per_level_and_reencoded_when_the_level_changes() {
+    let out = tmp("pngcache");
+    let cache = ConvertCache::new();
+    let run = |lvl: PngLevel| conv_with(&data("basic"), Some("p"), &out, &ConvertOptions { png_level: lvl, collision_quality: CollisionQuality::Low, ..Default::default() }, &Hooks::default().with_cache(cache.clone())).unwrap();
+    run(PngLevel::Best);
+    let size_best = std::fs::metadata(out.join("p/diffuse_p.png")).unwrap().len();
+    let r = run(PngLevel::Fast);
+    assert_eq!(r.cache_hits.iter().map(|s| s.as_str()).collect::<Vec<_>>(), ["scene", "atlas", "geometry", "collision"]);
+    let size_fast = std::fs::metadata(out.join("p/diffuse_p.png")).unwrap().len();
+    assert_ne!(size_best, size_fast, "a different level must produce different bytes (re-encoded, not served from the cache)");
+}
+
+// ---------------------------------------------------------------- fast OBJ writer
+
+#[test]
+fn obj_text_has_six_decimals_and_no_duplicate_vt_lines() {
+    for fixture in ["basic", "tiled", "misc"] {
+        let out = tmp(&format!("objfmt_{fixture}"));
+        let r = conv(&data(fixture), Some("m"), &out, &no_coll()).unwrap();
+        let text = std::fs::read_to_string(r.model_dir.join("m.obj")).unwrap();
+        let mut seen = std::collections::HashSet::new();
+        let (mut vts, mut faces) = (0usize, 0usize);
+        for l in text.lines() {
+            let mut t = l.split_whitespace();
+            let tag = t.next().unwrap_or("");
+            if matches!(tag, "v" | "vn" | "vt") {
+                for tok in t {
+                    let (_, frac) = tok.split_once('.').unwrap_or_else(|| panic!("{fixture}: no decimal point in {l:?}"));
+                    assert_eq!(frac.len(), 6, "{fixture}: {l:?}");
+                    tok.parse::<f64>().unwrap_or_else(|_| panic!("{fixture}: not a number in {l:?}"));
+                }
+            }
+            if tag == "vt" {
+                vts += 1;
+                assert!(seen.insert(l.to_string()), "{fixture}: duplicate vt line {l:?}");
+            }
+            if tag == "f" {
+                faces += 1;
+                for corner in l.split_whitespace().skip(1) {
+                    assert_eq!(corner.split('/').count(), 3, "{fixture}: {l:?}");
+                }
+            }
+        }
+        assert!(faces > 0 && vts > 0, "{fixture}");
+        check_obj(&r.model_dir.join("m.obj"));
+    }
+}

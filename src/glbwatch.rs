@@ -44,6 +44,7 @@ fn stamp_of(path: &std::path::Path) -> Option<Stamp> {
 
 /// FNV-1a over the whole file.
 fn hash_file(path: &std::path::Path) -> Option<u64> {
+    let _bench = crate::benchmark::work("glbwatch.hash_file");
     let bytes = std::fs::read(path).ok()?;
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for b in bytes {
@@ -59,6 +60,7 @@ pub fn watch_system(
     mut conv: ResMut<ConvertState>,
     mut w: Local<Watch>,
 ) {
+    let _bench = crate::benchmark::sys("sys.glbwatch.watch_system");
     let input = conv.input.clone().filter(|p| layout.converter && is_glb(p));
     let Some(path) = input else {
         if w.path.is_some() {
@@ -123,6 +125,7 @@ pub fn pacing_system(
     mut winit: ResMut<WinitSettings>,
     mut saved: Local<Option<(Duration, Duration)>>,
 ) {
+    let _bench = crate::benchmark::sys("sys.glbwatch.pacing_system");
     let watching = layout.converter && conv.input.is_some();
     let waits = |s: &WinitSettings| {
         let f = if let UpdateMode::Reactive { wait, .. } = &s.focused_mode {

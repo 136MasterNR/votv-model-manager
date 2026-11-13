@@ -5,6 +5,9 @@
 //!   votv-model-manager --check <model-folder>  print what the loader finds for one model, no window
 //!   votv-model-manager --diagnose <model-folder>  detailed report on the OBJ/MTL files (paste it when a model fails)
 //!   votv-model-manager --reset-folder          forget the saved folder and start in the default one again
+//!   votv-model-manager --hide-window          experimental: show the window only after the first frames are drawn
+//!   votv-model-manager --backend=vulkan|dx12|auto  graphics backend (Windows default: Vulkan, see startup.rs)
+//!   votv-model-manager --benchmark[=<folder>]  record timings of every workload to a folder (see benchmark.rs)
 //!
 //! Dropping a .glb file on the window converts it right away (see converter.rs) and shows the result.
 //!
@@ -24,6 +27,8 @@
 )]
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod benchmark;
+mod startup;
 mod blender;
 mod conv_ui;
 mod converter;
@@ -35,9 +40,11 @@ mod glbwatch;
 mod icon_font;
 mod icons;
 mod import;
+mod importpick;
 mod listmenu;
 mod model;
 mod preview;
+mod propsedit;
 mod printer;
 mod scene;
 mod textedit;
@@ -249,6 +256,8 @@ fn main() {
     if args.iter().any(|a| a.starts_with("--")) {
         attach_parent_console();
     }
+    benchmark::init(&args);
+    benchmark::phase("main_begin");
 
     if args.first().map(String::as_str) == Some("--check") {
         let Some(folder) = args.get(1) else {
@@ -296,6 +305,7 @@ fn main() {
     // The first candidate that holds a model wins, so the ones after it are never looked at; and only WHETHER a folder has
     // a model matters, not how many: `model::has_any_model` stops at the first one instead of scanning the library.
     let pick = {
+        let _bench = benchmark::work("startup.pick_folder");
         let mut first_with_models: Option<usize> = None;
         for (i, (p, why)) in candidates.iter().enumerate() {
             let state = if first_with_models.is_some() {
@@ -322,6 +332,7 @@ fn main() {
         .map(|(p, _)| p.clone())
         .unwrap_or_else(default_root);
     println!("[manager] using: {}", root.display());
+    benchmark::set_library(&root);
 
     App::new()
         .add_plugins(
@@ -329,6 +340,7 @@ fn main() {
                 // Compile shaders before first use. Without this, the first icons are rendered before their
                 // pipelines exist, come out blank, and only show up after Refresh.
                 .set(RenderPlugin {
+                    render_creation: startup::render_creation(&args),
                     synchronous_pipeline_compilation: true,
                     ..default()
                 })
@@ -341,6 +353,7 @@ fn main() {
                             min_height: 440.0,
                             ..default()
                         },
+                        visible: !startup::start_hidden(&args), // hidden only with --hide-window; shown by startup.rs
                         decorations: false, // the UI draws its own title bar; see ui.rs
                         resizable: true,
                         ..default()
@@ -348,6 +361,8 @@ fn main() {
                     ..default()
                 }),
         )
+        .add_plugins(benchmark::PhaseMark("default_plugins_built"))
+        .add_plugins(startup::StartupPlugin)
         // Redraw only on input, or while the icon/preview loaders ask for a frame.
         .insert_resource(WinitSettings::desktop_app())
         .insert_resource(ClearColor(Color::srgb(0.10, 0.11, 0.13)))
@@ -385,6 +400,7 @@ fn main() {
         .insert_resource(conv_ui::SliderDrag::default())
         .insert_resource(conv_ui::DropdownOpen::default())
         .insert_resource(conv_ui::EditTarget::default())
+        .insert_resource(propsedit::PropsTarget::default())
         .insert_resource(conv_ui::LogPanel::default())
         .insert_resource(conv_ui::OpenSections::default())
         .insert_resource(conv_ui::PropsWidth::default())
@@ -415,6 +431,7 @@ fn main() {
                 conv_ui::hull_indicator_system,
             ),
         )
+        .add_plugins(benchmark::BenchmarkPlugin)
         .insert_resource(dialog::ReplaceDialog::load())
         .init_gizmo_group::<preview::LampGizmos>()
         .add_systems(Startup, (ui::setup, gizmo_layers))
@@ -455,6 +472,8 @@ fn main() {
                 preview::preview_request,
                 preview::preview_receive,
                 converter::converter_system,
+                propsedit::props_system,
+                preview::props_live_cfg_system,
                 (
                     (
                         preview::controls,
@@ -477,6 +496,7 @@ fn main() {
                     listmenu::settings_menu_system,
                     conv_ui::props_icon_system,
                     dialog::dialog_system,
+                    importpick::pick_system,
                     preview::preview_text,
                     conv_ui::conv_ui_system,
                     conv_ui::info_tree_system,

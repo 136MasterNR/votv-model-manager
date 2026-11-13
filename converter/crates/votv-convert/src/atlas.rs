@@ -164,16 +164,49 @@ pub fn material_swatch(mat: Option<&Material>, textures: &[Option<Tex>], apply_f
     (solid(64, 64, [200, 200, 200, 255]), false)
 }
 
+/// Copy `tile` into `dst` with its top-left padding corner at (`ox`, `oy`) and `pad` pixels of replicated edge on every side.
+/// Same result as the old `pad_edge` followed by `imageops::replace`, but written row by row (memcpy for the middle of each row) with no
+/// intermediate image. Anything outside `dst` is clipped, like `replace` does.
+pub fn blit_padded(dst: &mut RgbaImage, tile: &RgbaImage, ox: u32, oy: u32, pad: u32) {
+    let (w, h) = tile.dimensions();
+    if w == 0 || h == 0 {
+        return;
+    }
+    let (dw, dh) = dst.dimensions();
+    let src: &[u8] = tile.as_raw();
+    let raw: &mut [u8] = &mut *dst;
+    let (wu, dwu) = (w as usize, dw as usize);
+    for y in 0..h + 2 * pad {
+        let dy = oy + y;
+        if dy >= dh {
+            break;
+        }
+        let sy = y.saturating_sub(pad).min(h - 1) as usize;
+        let srow = &src[sy * wu * 4..(sy + 1) * wu * 4];
+        let drow = &mut raw[dy as usize * dwu * 4..(dy as usize + 1) * dwu * 4];
+        for x in 0..pad {
+            let dx = ox + x;
+            if dx < dw {
+                drow[dx as usize * 4..dx as usize * 4 + 4].copy_from_slice(&srow[..4]);
+            }
+            let dx = ox + pad + w + x;
+            if dx < dw {
+                drow[dx as usize * 4..dx as usize * 4 + 4].copy_from_slice(&srow[(wu - 1) * 4..]);
+            }
+        }
+        let mx = ox + pad;
+        if mx < dw {
+            let n = wu.min((dw - mx) as usize);
+            drow[mx as usize * 4..(mx as usize + n) * 4].copy_from_slice(&srow[..n * 4]);
+        }
+    }
+}
+
+#[cfg(test)]
 pub fn pad_edge(img: &RgbaImage, pad: u32) -> RgbaImage {
     let (w, h) = img.dimensions();
     let mut out = RgbaImage::new(w + 2 * pad, h + 2 * pad);
-    for y in 0..h + 2 * pad {
-        let sy = y.saturating_sub(pad).min(h - 1);
-        for x in 0..w + 2 * pad {
-            let sx = x.saturating_sub(pad).min(w - 1);
-            out.put_pixel(x, y, *img.get_pixel(sx, sy));
-        }
-    }
+    blit_padded(&mut out, img, 0, 0, pad);
     out
 }
 
@@ -192,16 +225,16 @@ pub struct Placement {
 pub fn pack(swatches: &[RgbaImage]) -> (RgbaImage, Vec<Placement>) {
     let mut order: Vec<usize> = (0..swatches.len()).collect();
     order.sort_by(|&a, &b| swatches[b].height().cmp(&swatches[a].height()));
-    let padded: Vec<RgbaImage> = order.iter().map(|&i| pad_edge(&swatches[i], PAD)).collect();
+    // size of each tile with its padding; the tiles are written straight into the atlas below
+    let dims: Vec<(u32, u32)> = order.iter().map(|&i| (swatches[i].width() + 2 * PAD, swatches[i].height() + 2 * PAD)).collect();
 
-    let total_area: u64 = padded.iter().map(|p| p.width() as u64 * p.height() as u64).sum();
-    let max_w = padded.iter().map(|p| p.width()).max().unwrap_or(1);
+    let total_area: u64 = dims.iter().map(|d| d.0 as u64 * d.1 as u64).sum();
+    let max_w = dims.iter().map(|d| d.0).max().unwrap_or(1);
     let atlas_w = max_w.max(((total_area as f64).sqrt() as u32).max(1));
 
     let (mut xc, mut yc, mut shelf_h) = (0u32, 0u32, 0u32);
     let mut raw: Vec<(u32, u32)> = Vec::new();
-    for p in &padded {
-        let (pw, ph) = p.dimensions();
+    for &(pw, ph) in &dims {
         if xc + pw > atlas_w && xc > 0 {
             xc = 0;
             yc += shelf_h;
@@ -217,7 +250,7 @@ pub fn pack(swatches: &[RgbaImage]) -> (RgbaImage, Vec<Placement>) {
     let mut placements = vec![None; swatches.len()];
     for (slot, &i) in order.iter().enumerate() {
         let (px, py) = raw[slot];
-        imageops::replace(&mut atlas, &padded[slot], px as i64, py as i64);
+        blit_padded(&mut atlas, &swatches[i], px, py, PAD);
         placements[i] = Some(Placement {
             x: px + PAD,
             y_top: py + PAD,
@@ -296,6 +329,7 @@ fn pbr_tile(m: &Material, tx: &[Option<Tex>], metallic_scale: f64, metallic_max:
     Some(solid(64, 64, [0, spec, v, 255]))
 }
 
+#[derive(Clone, Copy, Debug)]
 pub enum MapKind {
     Emissive,
     Normal { flip_green: bool },
@@ -303,22 +337,28 @@ pub enum MapKind {
     Pbr { metallic_scale: f64, metallic_max: f64 },
 }
 
-/// Build one extra atlas with the same layout as the diffuse atlas. Returns `None` when no
-/// material has data for it. `mats[i]` is the material of slot `i` (`None` for flat/default slots).
-pub fn build_map(
-    kind: MapKind,
-    mats: &[Option<&Material>],
-    placements: &[Placement],
-    textures: &[Option<Tex>],
-) -> Option<RgbaImage> {
-    let any = mats.iter().flatten().any(|m| match kind {
+/// Does any material have data for this kind of extra map? (When none does, the map is not written at all.)
+pub fn map_needed(kind: MapKind, mats: &[Option<&Material>]) -> bool {
+    mats.iter().flatten().any(|m| match kind {
         MapKind::Emissive => has_emission(m),
         MapKind::Normal { .. } => has_normal(m),
         MapKind::Pbr { .. } => has_roughness(m),
-    });
-    if !any {
-        return None;
-    }
+    })
+}
+
+/// The tile of one slot for an extra map, already at the slot's size in the atlas. `None` when the material has nothing for this map
+/// (the slot then keeps the map's neutral fill). Slots are independent, so the callers compute them in parallel.
+pub fn map_tile(kind: MapKind, m: &Material, p: &Placement, textures: &[Option<Tex>]) -> Option<RgbaImage> {
+    let tile = match kind {
+        MapKind::Emissive => emissive_tile(m, textures),
+        MapKind::Normal { flip_green } => normal_tile(m, textures, flip_green),
+        MapKind::Pbr { metallic_scale, metallic_max } => pbr_tile(m, textures, metallic_scale, metallic_max),
+    }?;
+    Some(if tile.dimensions() != (p.w, p.h) { resize_rgba(&tile, p.w, p.h) } else { tile })
+}
+
+/// Lay the finished tiles of one extra map out in an atlas with the same layout as the diffuse atlas (`tiles[i]` belongs to `placements[i]`).
+pub fn assemble_map(kind: MapKind, placements: &[Placement], tiles: &[Option<RgbaImage>]) -> RgbaImage {
     let (aw, ah) = (placements[0].atlas_w, placements[0].atlas_h);
     let fill = match kind {
         MapKind::Emissive => [0, 0, 0, 255],
@@ -326,19 +366,23 @@ pub fn build_map(
         MapKind::Pbr { .. } => [0, 128, 128, 255],
     };
     let mut atlas = solid(aw, ah, fill);
-    for (m, p) in mats.iter().zip(placements) {
-        let Some(m) = m else { continue };
-        let tile = match kind {
-            MapKind::Emissive => emissive_tile(m, textures),
-            MapKind::Normal { flip_green } => normal_tile(m, textures, flip_green),
-            MapKind::Pbr { metallic_scale, metallic_max } => pbr_tile(m, textures, metallic_scale, metallic_max),
-        };
-        let Some(tile) = tile else { continue };
-        let tile = if tile.dimensions() != (p.w, p.h) { resize_rgba(&tile, p.w, p.h) } else { tile };
-        let padded = pad_edge(&tile, PAD);
-        imageops::replace(&mut atlas, &padded, p.x as i64 - PAD as i64, p.y_top as i64 - PAD as i64);
+    for (tile, p) in tiles.iter().zip(placements) {
+        if let Some(tile) = tile {
+            blit_padded(&mut atlas, tile, p.x.saturating_sub(PAD), p.y_top.saturating_sub(PAD), PAD);
+        }
     }
-    Some(atlas)
+    atlas
+}
+
+/// Build one extra atlas with the same layout as the diffuse atlas, one slot after the other. Returns `None` when no
+/// material has data for it. `mats[i]` is the material of slot `i` (`None` for flat/default slots). Built from
+/// [`map_needed`], [`map_tile`] and [`assemble_map`].
+pub fn build_map(kind: MapKind, mats: &[Option<&Material>], placements: &[Placement], textures: &[Option<Tex>]) -> Option<RgbaImage> {
+    if !map_needed(kind, mats) {
+        return None;
+    }
+    let tiles: Vec<Option<RgbaImage>> = mats.iter().zip(placements).map(|(m, p)| m.and_then(|m| map_tile(kind, m, p, textures))).collect();
+    Some(assemble_map(kind, placements, &tiles))
 }
 
 pub fn shrink_to_fit(img: RgbaImage, max: u32) -> (RgbaImage, Option<((u32, u32), (u32, u32))>) {
@@ -350,4 +394,71 @@ pub fn shrink_to_fit(img: RgbaImage, max: u32) -> (RgbaImage, Option<((u32, u32)
     let nw = ((w as f64 * ratio) as u32).max(1);
     let nh = ((h as f64 * ratio) as u32).max(1);
     (resize_rgba(&img, nw, nh), Some(((w, h), (nw, nh))))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The original per-pixel implementation, kept here as the oracle for `blit_padded`.
+    fn pad_edge_slow(img: &RgbaImage, pad: u32) -> RgbaImage {
+        let (w, h) = img.dimensions();
+        let mut out = RgbaImage::new(w + 2 * pad, h + 2 * pad);
+        for y in 0..h + 2 * pad {
+            let sy = y.saturating_sub(pad).min(h - 1);
+            for x in 0..w + 2 * pad {
+                let sx = x.saturating_sub(pad).min(w - 1);
+                out.put_pixel(x, y, *img.get_pixel(sx, sy));
+            }
+        }
+        out
+    }
+
+    fn noise(w: u32, h: u32, seed: u32) -> RgbaImage {
+        RgbaImage::from_fn(w, h, |x, y| {
+            let v = x.wrapping_mul(2654435761).wrapping_add(y.wrapping_mul(40503)).wrapping_add(seed.wrapping_mul(97));
+            Rgba([v as u8, (v >> 8) as u8, (v >> 16) as u8, (v >> 24) as u8])
+        })
+    }
+
+    #[test]
+    fn blit_padded_equals_pad_edge_then_replace() {
+        for &(w, h) in &[(1u32, 1u32), (1, 5), (7, 1), (3, 4), (16, 9), (64, 64)] {
+            let tile = noise(w, h, w * 31 + h);
+            assert_eq!(pad_edge(&tile, PAD), pad_edge_slow(&tile, PAD), "{w}x{h}");
+            // inside a bigger atlas, at an offset, over existing content
+            let (aw, ah) = (w + 2 * PAD + 5, h + 2 * PAD + 3);
+            let mut a = noise(aw, ah, 1);
+            let mut b = a.clone();
+            blit_padded(&mut a, &tile, 3, 2, PAD);
+            imageops::replace(&mut b, &pad_edge_slow(&tile, PAD), 3, 2);
+            assert_eq!(a, b, "offset {w}x{h}");
+        }
+    }
+
+    #[test]
+    fn blit_padded_clips_like_replace() {
+        let tile = noise(10, 6, 7);
+        let mut a = noise(12, 9, 2);
+        let mut b = a.clone();
+        blit_padded(&mut a, &tile, 6, 4, PAD); // sticks out to the right and bottom
+        imageops::replace(&mut b, &pad_edge_slow(&tile, PAD), 6, 4);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn pack_places_every_tile_with_its_edge_padding() {
+        let sw = vec![noise(8, 8, 1), noise(5, 12, 2), noise(30, 3, 3)];
+        let (atlas, pl) = pack(&sw);
+        for (img, p) in sw.iter().zip(&pl) {
+            for y in 0..img.height() {
+                for x in 0..img.width() {
+                    assert_eq!(atlas.get_pixel(p.x + x, p.y_top + y), img.get_pixel(x, y));
+                }
+            }
+            // the padding repeats the edge pixel
+            assert_eq!(atlas.get_pixel(p.x - 1, p.y_top), img.get_pixel(0, 0));
+            assert_eq!(atlas.get_pixel(p.x + img.width(), p.y_top + img.height() - 1), img.get_pixel(img.width() - 1, img.height() - 1));
+        }
+    }
 }

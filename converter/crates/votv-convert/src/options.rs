@@ -32,6 +32,19 @@ pub enum EmissiveMode {
     Literal,
 }
 
+/// PNG compression effort for the texture atlases. Pixels are identical at every level; only file size and encode time change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PngLevel {
+    /// Very fast (fdeflate, simple filter), clearly larger files. For live previews.
+    Fast,
+    /// The default: adaptive filtering with the standard compression effort. Measured on the Porsche and Ninomae test models it was 4-6x faster than
+    /// `Best` for files only 0.5-1.3% larger.
+    Balanced,
+    /// Smallest files, slowest (the converter's historical setting, before v0.2). Worth it only when file size matters more than waiting.
+    Best,
+}
+
 /// What to do when `<output_dir>/<name>` already exists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -93,6 +106,9 @@ pub struct ConvertOptions {
     /// Remove parts whose material or object name contains "outline": toon outline shells (inverted hulls) are only meant to be
     /// seen with special culling and show up as solid dark surfaces in VotV.
     pub drop_outline_parts: bool,
+    /// PNG compression effort of the atlas files (see [`PngLevel`]). The default is `Balanced`; a GUI can use `Fast` while the user is tweaking, and `Best` is opt-in for the smallest files. The encoded bytes are
+    /// cached per level, and the maps are compressed in parallel on separate threads while geometry and collision are computed.
+    pub png_level: PngLevel,
 
     /// Generate collision from the visible geometry when the source has none. When false, only a small
     /// box collider is written (the game needs at least one `UCX_` object or it skips health, edible and bites).
@@ -155,6 +171,7 @@ impl Default for ConvertOptions {
             metallic_max: 0.75,
             emissive_mode: EmissiveMode::Auto,
             drop_outline_parts: true,
+            png_level: PngLevel::Balanced,
             generate_collision: true,
             force_generate_collision: false,
             collision_quality: CollisionQuality::High,

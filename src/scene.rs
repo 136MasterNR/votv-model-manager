@@ -19,11 +19,12 @@ use crate::model::*;
 
 /// VotV units are centimetres; Bevy works best in metres.
 pub const UNIT: f32 = 0.01;
-/// Lumens of the preview lamp per unit of the model's `lamp_intensity`. It was 200, which made a lamp colour of 0.01 look
-/// like 1.0 in the game and a colour of 1.0 burn the texture to white; the user measured that as about 100 times too strong,
-/// so it is 2 now. (A physical candela-to-lumen conversion would be 4 pi, about 12.6, but the preview's exposure is
-/// not the game's, so this is calibrated against the game.) Raise it if lamps look too dim next to the game.
-pub const LAMP_GAIN: f32 = 2.0;
+/// Lumens of the preview lamp per unit of the model's `lamp_intensity`: the physical candela-to-lumen conversion, 4 pi.
+/// History: it was 200 (far too strong), then 2.0 (measured against a lamp with the default intensity 5001), which left
+/// a real lamp invisible: the crystal lamp (130, attenuation 60 cm) lit its lily pad by about +0.045 linear where the game
+/// shows +0.19 (lamp off (100,75,31) -> on (153,79,50), 2026-11-10). 4 pi is the first estimate that fits that model;
+/// [?] a model that keeps the default intensity 5001 may now look too bright. Trim here.
+pub const LAMP_GAIN: f32 = 4.0 * std::f32::consts::PI;
 
 /// Toggles for the things that are not verified yet (see references/open-questions.md).
 #[derive(Resource, Clone, PartialEq)]
@@ -392,10 +393,42 @@ pub fn icon_reflectance(spec: Option<f32>) -> f32 {
     spec.map_or(0.0, |s| (s.clamp(0.0, 1.0) * 0.5).sqrt())
 }
 
-/// Mean of the specular channel (stored in R by `model.rs`) of a decoded pbr map, 0..1.
+/// Lowest roughness the preview's world look allows (0..1). The game's world at night shows no sharp highlights on
+/// the crystal lamp's vines and lily pad even where its pbr map asks for them (the red veins of the pad have a
+/// roughness of about 0.2 in the map): the preview, with two strong lights and no flashlight, turned those into glossy
+/// streaks. Raising the floor softens every highlight; 0 = the map as authored. Preview only (icons use the map as is).
+pub const WORLD_ROUGHNESS_MIN: f32 = 0.7;
+
+/// A texel whose metallic value (B, in Bevy's order) is at least this keeps its authored roughness in `soften_pbr`.
+const METAL_KEEP: u8 = 77;
+
+/// The pbr map (already in Bevy's order: R specular, G roughness, B metallic) with the roughness floor applied, EXCEPT
+/// where the model's emissive map glows or where the texel is metal (the crystal itself): glass and metal keep their
+/// authored smoothness, so they still show their reflections and the white glint like in the game, while vines and
+/// leaves lose their sharp streaks. `glow` is the emissive map of the same atlas (RGBA, same size) when there is one.
+fn soften_pbr(data: &[u8], glow: Option<&[u8]>) -> Vec<u8> {
+    let floor = (WORLD_ROUGHNESS_MIN.clamp(0.0, 1.0) * 255.0).round() as u8;
+    let glow = glow.filter(|g| g.len() == data.len());
+    let mut out = data.to_vec();
+    for (i, px) in out.chunks_exact_mut(4).enumerate() {
+        let glows = glow.is_some_and(|g| g[i * 4].max(g[i * 4 + 1]).max(g[i * 4 + 2]) > 24);
+        if !glows && px[2] < METAL_KEEP {
+            px[1] = px[1].max(floor);
+        }
+    }
+    out
+}
+
+/// Mean of the specular channel (stored in R by `model.rs`) of a decoded pbr map, 0..1, over the texels that HAVE
+/// specular: matte texels (`model::MATTE_SPECULAR`, which `model::pbr_texel` already makes non-shiny) and empty atlas area
+/// are left out, so a model's reflectance depends neither on how much empty space its atlas has nor on how much of it is
+/// matte (the crystal lamp's vines and pad would dilute the crystal's 0.74 to 0.36). A map without any specular has none.
 fn mean_specular(data: &[u8]) -> f32 {
     let (mut sum, mut n) = (0u64, 0u64);
     for px in data.chunks_exact(4).step_by(7) {
+        if px[0] < MATTE_SPECULAR {
+            continue;
+        }
         sum += px[0] as u64;
         n += 1;
     }
@@ -419,6 +452,15 @@ pub fn spawn_model(
     o: &Opts,
     full: bool,
 ) -> Built {
+    let mut _bench = crate::benchmark::work("scene.spawn_model");
+    _bench.detail_with(|| {
+        format!(
+            "{} full={full} sections={} images={}",
+            l.data.name,
+            l.data.sections.len(),
+            l.pool.len()
+        )
+    });
     let m = &l.data;
     let usage = if full {
         RenderAssetUsages::default()
@@ -426,13 +468,24 @@ pub fn spawn_model(
         RenderAssetUsages::RENDER_WORLD
     };
     let strength = m.num("emissive_strength", 1.0);
+    let _images_bench = crate::benchmark::work("scene.build_images");
+    // The emissive map that goes with each pbr map (same atlas), to keep the glowing glass smooth (`soften_pbr`).
+    let glow_of = |pbr_ix: usize| -> Option<usize> {
+        (0..m.sections.len())
+            .find(|&i| l.tex[i][Kind::Pbr.idx()] == Some(pbr_ix))
+            .and_then(|i| l.tex[i][Kind::Emissive.idx()])
+    };
     let handles: Vec<Handle<Image>> = l
         .pool
         .iter()
-        .map(|p| {
+        .enumerate()
+        .map(|(pi, p)| {
             // Above 1.0 the strength is baked into the emissive map with its hue kept (see `boost_emissive`).
             let mut img = if p.kind == Kind::Emissive && strength > 1.0 {
                 image_from(p, boost_emissive(&p.img.data, strength), usage)
+            } else if full && o.thumb_lights && p.kind == Kind::Pbr {
+                let glow = glow_of(pi).map(|e| &l.pool[e].img.data[..]);
+                image_from(p, soften_pbr(&p.img.data, glow), usage)
             } else {
                 to_bevy_image(p, usage)
             };
@@ -447,6 +500,7 @@ pub fn spawn_model(
             images.add(img)
         })
         .collect();
+    drop(_images_bench);
 
     let root = commands
         .spawn((
@@ -513,7 +567,10 @@ pub fn spawn_model(
             },
             ..default()
         });
-        let mesh = meshes.add(build_mesh(s, o, full));
+        let mesh = {
+            let _t = crate::benchmark::sys("scene.build_mesh");
+            meshes.add(build_mesh(s, o, full))
+        };
         // The game's procedural mesh has CastShadow = false.
         let e = commands
             .spawn((
@@ -599,3 +656,53 @@ mod lamp_axis_tests {
         assert_eq!(lamp_offset_to_model(Vec3::new(1.0, 2.0, 3.0), true), Vec3::new(1.0, 2.0, 3.0));
     }
 }
+
+#[cfg(test)]
+mod pbr_scene_tests {
+    use super::*;
+
+    /// 14 texels, only every 7th is looked at by `mean_specular`: texel 0 has specular `first`, texel 7 has `second`.
+    fn map(first: u8, second: u8) -> Vec<u8> {
+        let mut d = vec![0u8; 14 * 4];
+        d[0] = first;
+        d[7 * 4] = second;
+        d
+    }
+
+    #[test]
+    fn matte_texels_are_not_part_of_the_specular_average() {
+        let m = mean_specular(&map(190, 0));
+        assert!((m - 190.0 / 255.0).abs() < 1e-6, "{m}");
+    }
+
+    #[test]
+    fn glossy_texels_are_averaged() {
+        let m = mean_specular(&map(200, 100));
+        assert!((m - 150.0 / 255.0).abs() < 1e-6, "{m}");
+    }
+
+    #[test]
+    fn a_map_without_any_specular_has_none() {
+        assert_eq!(mean_specular(&map(0, 0)), 0.0);
+        assert_eq!(mean_specular(&[]), 0.0);
+    }
+
+    // texels in Bevy's order: R specular, G roughness, B metallic, A
+    #[test]
+    fn the_roughness_floor_leaves_metal_and_glow_alone() {
+        let data = [
+            128u8, 20, 0, 255, // dielectric: gets the floor
+            190, 60, 190, 255, // metal (the crystal): keeps its roughness
+            128, 20, 0, 255, // dielectric where the emissive map glows: keeps its roughness
+        ];
+        let glow = [0u8, 0, 0, 255, 0, 0, 0, 255, 200, 10, 10, 255];
+        let out = soften_pbr(&data, Some(&glow));
+        let floor = (WORLD_ROUGHNESS_MIN * 255.0).round() as u8;
+        assert!(out[1] >= floor - 1 && out[1] <= floor + 1, "{}", out[1]);
+        assert_eq!(out[5], 60, "a metal keeps its roughness");
+        assert_eq!(out[9], 20, "a glowing texel keeps its roughness");
+        // nothing but the roughness changes
+        assert_eq!((out[0], out[2], out[3]), (128, 0, 255));
+    }
+}
+

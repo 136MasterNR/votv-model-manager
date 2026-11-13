@@ -112,6 +112,13 @@ pub struct ConvertState {
     pub saved: Option<PathBuf>,
     /// Something was saved this session: the list must be rescanned when going back.
     pub saved_any: bool,
+    /// Properties-only mode (`propsedit.rs`): the folder of a model without a saved .glb whose `properties.cfg` is being
+    /// edited. No conversion runs in this mode; `input` holds the same folder so the editor screen counts as open.
+    pub props: Option<PathBuf>,
+    /// Bumped after every save in properties-only mode; the preview reloads the model when it changes.
+    pub props_gen: u64,
+    /// Whether `emissive_strength` is written (the file had it, or the folder has an emissive map).
+    pub props_emissive: bool,
 }
 
 pub(crate) fn base_options() -> Options {
@@ -147,7 +154,38 @@ impl ConvertState {
             cache: ConvertCache::new(),
             saved: None,
             saved_any: false,
+            props: None,
+            props_gen: 0,
+            props_emissive: false,
         }
+    }
+
+    /// Properties-only mode: open the `properties.cfg` of the model in `dir` for editing, without the converter. The
+    /// sidebar edits `opts.properties` (the rows are the same as in the editor); `propsedit::props_system` writes the file.
+    pub fn begin_props(&mut self, dir: PathBuf) {
+        self.cancel_all();
+        crate::benchmark::mark_cancel("convert.edit_to_shown", 0);
+        crate::benchmark::event("props.open", || dir.display().to_string());
+        self.session += 1;
+        let text = std::fs::read_to_string(dir.join("properties.cfg")).unwrap_or_default();
+        self.props_emissive = text.contains("emissive_strength") || crate::propsedit::has_emissive_map(&dir);
+        self.restored = false;
+        self.opts = base_options();
+        self.opts.properties = votv_convert::model_core::PropertiesCfg::parse(&text);
+        self.opts.emissive = self.props_emissive; // the Emissive strength row is greyed out unless the model has an emissive map
+        self.opts.output_name = dir.file_name().map(|n| n.to_string_lossy().into_owned());
+        self.cache.clear();
+        self.saved = Some(dir.clone()); // the model IS saved: the icon box, Capture as icon and rename work on this folder
+        self.saved_any = false;
+        self.info = None;
+        self.diags.clear();
+        self.report = None;
+        self.shown = false;
+        self.pending = None;
+        self.hold = 0;
+        self.status = Status::Idle;
+        self.input = Some(dir.clone());
+        self.props = Some(dir);
     }
 
     /// A previous run was cancelled but its thread has not exited yet.
@@ -167,6 +205,10 @@ impl ConvertState {
     /// Like `begin`; with `restored` (options read back from a model's sidecar) the file's own presets are not applied.
     pub fn begin_with(&mut self, path: PathBuf, restored: Option<Options>) {
         self.cancel_all();
+        self.props = None; // a .glb was opened: the converter editor, not properties-only
+        crate::benchmark::mark_cancel("convert.edit_to_shown", 0);
+        crate::benchmark::mark_start("convert.edit_to_shown", 0); // file opened (or replaced) until the model is on the stage
+        crate::benchmark::event("convert.open", || path.display().to_string());
         self.session += 1;
         self.restored = restored.is_some();
         self.opts = match restored {
@@ -192,6 +234,11 @@ impl ConvertState {
         let (tx, rx) = channel();
         self.inspect_rx = Some(Mutex::new(rx));
         std::thread::spawn(move || {
+            let mut _bench = crate::benchmark::work("convert.inspect");
+            _bench.detail_with(|| {
+                let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                format!("{} glb_bytes={bytes}", path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default())
+            });
             let _ = tx.send(inspect(&path).map_err(|e| e.to_string()));
         });
     }
@@ -244,6 +291,9 @@ impl ConvertState {
     /// A new file was dropped on the converter screen: swap the input, keep the parameters, the old model on the
     /// stage and the camera, and regenerate (handy after re-exporting a model from Blender).
     pub fn replace_input(&mut self, path: PathBuf) {
+        if self.props.is_some() {
+            return self.begin(path); // properties-only mode has no model to replace: this opens the .glb as a new one
+        }
         // The dropped file REPLACES the open model: it keeps the model's name (and folder), whatever the file is called.
         if let Some(name) = self.current_model_name() {
             self.opts.output_name = Some(name);
@@ -266,6 +316,8 @@ impl ConvertState {
 
     /// Leave the converter screen: stop everything and drop the session.
     pub fn end(&mut self) {
+        crate::benchmark::mark_cancel("convert.edit_to_shown", 0);
+        self.props = None;
         self.cancel_all();
         self.session += 1;
         self.input = None;
@@ -292,6 +344,9 @@ impl ConvertState {
     pub fn changed(&mut self, delay: f32) {
         if self.input.is_none() {
             return;
+        }
+        if self.props.is_none() {
+            crate::benchmark::mark_start("convert.edit_to_shown", 0); // an option changed: until the new model is on the stage
         }
         if let Some(r) = self.run.take() {
             r.cancel.cancel();
@@ -373,6 +428,7 @@ impl ConvertState {
             fraction: 0.0,
             message: "Starting".into(),
         };
+        let job_id = self.job;
 
         let (tx, rx) = channel::<Msg>();
         let cancel = CancelToken::new();
@@ -383,6 +439,7 @@ impl ConvertState {
             .with_cancel(cancel.clone())
             .with_cache(self.cache.clone())
             .with_progress(move |p| {
+                crate::benchmark::stage("convert", job_id, &p.message);
                 if let Ok(t) = tx_progress.lock() {
                     // The converter covers 0..1; the last tenth is parsing the result for the preview.
                     let _ = t.send(Msg::Progress(p.fraction * 0.9, p.message.clone()));
@@ -399,8 +456,17 @@ impl ConvertState {
         let flag = cancel.clone();
         std::thread::spawn(move || {
             let _guard = guard;
+            let mut _bench = crate::benchmark::work("convert.job");
+            _bench.detail_with(|| {
+                let bytes = std::fs::metadata(&input).map(|m| m.len()).unwrap_or(0);
+                format!("job={job_id} {} glb_bytes={bytes}", input.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default())
+            });
             let res = run_job(&opts, &input, &hooks, &flag, &tx, &root);
-            let _ = std::fs::remove_dir_all(&dir); // the temp job folder is never needed afterwards
+            crate::benchmark::stage_end("convert", job_id);
+            {
+                let _t = crate::benchmark::work("convert.cleanup_temp_dir");
+                let _ = std::fs::remove_dir_all(&dir); // the temp job folder is never needed afterwards
+            }
             let _ = tx.send(Msg::Done(res));
         });
         self.run = Some(Run {
@@ -529,8 +595,11 @@ fn run_job(
     root: &Path,
 ) -> Result<(Report, Loaded), (String, String)> {
     let cancelled = || ("cancelled".to_string(), "cancelled".to_string());
-    let mut report =
-        convert_with(opts, input, hooks).map_err(|e| (e.kind().to_string(), e.to_string()))?;
+    let mut report = {
+        let _t = crate::benchmark::work("convert.convert_with");
+        convert_with(opts, input, hooks).map_err(|e| (e.kind().to_string(), e.to_string()))?
+    };
+    crate::benchmark::event("convert.cache_hits", || report.cache_hits.join(","));
     if !report.cache_hits.is_empty() {
         println!(
             "[convert] reused from cache: {}",
@@ -542,25 +611,33 @@ fn run_job(
     }
     // Keep the source next to the model so it can be edited later.
     let glb = report.model_dir.join(format!("{}.glb", report.name));
-    std::fs::copy(input, &glb).map_err(|e| {
-        (
-            "io".to_string(),
-            format!("Could not save a copy of the .glb: {e}"),
-        )
-    })?;
+    {
+        let _t = crate::benchmark::work("convert.copy_glb");
+        std::fs::copy(input, &glb).map_err(|e| {
+            (
+                "io".to_string(),
+                format!("Could not save a copy of the .glb: {e}"),
+            )
+        })?;
+    }
     let _ = tx.send(Msg::Progress(0.93, "Building the preview".into()));
-    let loaded = load_with_textures(&report.model_dir, &KINDS, None).map_err(|e| {
-        (
-            "preview".to_string(),
-            format!("The converted model could not be previewed: {e}"),
-        )
-    })?;
+    let loaded = {
+        let _t = crate::benchmark::work("convert.load_for_preview");
+        load_with_textures(&report.model_dir, &KINDS, None).map_err(|e| {
+            (
+                "preview".to_string(),
+                format!("The converted model could not be previewed: {e}"),
+            )
+        })?
+    };
     if cancel.is_cancelled() {
         return Err(cancelled());
     }
     let _ = tx.send(Msg::Progress(0.97, "Saving to the library".into()));
-    let final_dir =
-        install(&report.model_dir, root, &report.name).map_err(|e| ("install".to_string(), e))?;
+    let final_dir = {
+        let _t = crate::benchmark::work("convert.install");
+        install(&report.model_dir, root, &report.name).map_err(|e| ("install".to_string(), e))?
+    };
     report.model_dir = final_dir;
     Ok((report, loaded))
 }
@@ -583,8 +660,9 @@ pub fn converter_system(
     mut redraw: EventWriter<RequestRedraw>,
     mut last_session: Local<u64>,
 ) {
-    if !layout.converter || st.input.is_none() {
-        return;
+    let _bench = crate::benchmark::sys("sys.converter.converter_system");
+    if !layout.converter || st.input.is_none() || st.props.is_some() {
+        return; // (properties-only mode has its own system, propsedit.rs)
     }
     // A new file replaced the old one: take the old model off the stage.
     if st.session != *last_session {
@@ -710,6 +788,7 @@ pub fn converter_system(
                     keep_camera,
                 );
                 st.shown = true;
+                crate::benchmark::mark_end("convert.edit_to_shown", 0, || report.name.clone());
                 // A rename saves the model under a new folder: remove the folder of the old name when this program made
                 // it (it has the sidecar), after moving its icon over.
                 if let Some(old) = st.saved.clone() {
@@ -742,6 +821,8 @@ pub fn converter_system(
             }
             Err((kind, message)) => {
                 if kind != "cancelled" {
+                    crate::benchmark::mark_cancel("convert.edit_to_shown", 0);
+                    crate::benchmark::event("convert.failed", || format!("{kind}: {message}"));
                     println!("[convert] failed [{kind}]: {message}");
                     st.status = Status::Failed(message);
                 }

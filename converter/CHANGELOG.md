@@ -3,7 +3,11 @@
 Versioning: 0.x. Breaking API changes bump the minor version and are listed here with the migration. The converter agent
 only edits `crates/votv-convert` and `crates/votv-model-core`; the GUI is not part of this repository.
 
-## 0.2.0 (not yet compiled, see INTEGRATION.md)
+## 0.2.0 (release candidate: built and benchmarked on Windows/AMD Zen 4; see "Status" below)
+
+**Status.** Built and benchmarked by the user on Windows 11 / AMD Zen 4 (24 logical cores), release profile. Measured medians, 1k Porsche (241k triangles) / Ninomae (88k triangles), cold conversion with collision:
+Porsche 7523 -> ~975 ms (7.7x), Ninomae 2724 -> ~0.7 s; warm "nothing changed" 114 -> 37 ms (Porsche) and 47 -> 13 ms (Ninomae); warm scale change 388 -> 93 ms and 143 -> 33 ms. Default PNG level is `Balanced` (files ~1% larger than `Best`, 4-6x faster to write).
+The very last edit (reverting the per-material job pool and making `pad_edge` test-only) restores code that was already benchmarked and has not been compiled by its author; run `cargo test --release` once after unpacking. Details: `OPTIMIZATION_PLAN.md` sections 11-14.
 - New `convert(&Options, input)` / `convert_with(&Options, input, &Hooks)`; output folder and name are options now (breaking vs 0.1).
 - `DiagCode` enum, `Stats::{sections, triangles, hulls}`, `CancelToken::from_flag`, `OverwritePolicy`, `Report::extras`.
 - Options mirror `properties.cfg` via `votv_model_core::PropertiesCfg`; every field documented.
@@ -67,6 +71,30 @@ only edits `crates/votv-convert` and `crates/votv-model-core`; the GUI is not pa
   medium roughness renders dark (a mirror of the dark environment; the ground texture shows in it) while 192 (0.75) and below still look like the paint colour, and roughness 220 at 255 looks
   orange. The Porsche's paint (metallic 255, roughness 255 x 0.4248 = 108) was exactly the dark case. Metallic values above the cap are written as the cap. Set `metallic_max` to 1 for authored
   chrome. Nothing was misread and no shader is missing: it is ordinary PBR in an environment with little to reflect. CLI: `--metallic-max`.
+- **Phase 0 instrumentation (no behaviour change):** `Report::timings` (`StageTiming { stage, micros }`; stages `load`, `prepare`, `atlas`, `geometry`, `collision` with nested `vhacd_generate`,
+  `png`, `files`, `obj_verify_swap`, `total`) and `examples/bench.rs` (see `BENCHMARK.md`): cold/warm scenarios, peak and retained heap, JSON output. Additive API.
+- **Optimization item 1 (PNG; was 73% of every cold run in the benchmark):** the atlas maps are now compressed on their own threads, started right after the atlas stage so they overlap
+  geometry and collision; the encoder no longer clones the atlas (RGBA straight from the buffer, RGB from one packed buffer); the `png` crate's pure-Rust `zlib-rs` backend is enabled. New option
+  `png_level` (`Fast` / `Balanced` / `Best`, default `Best` = same compression as before; pixels are identical at every level, only size and time differ; a GUI should use `Fast` while the user
+  tweaks and `Best` for the final model). Encoded bytes are cached per level. `Report::timings` `png` now means the time spent waiting for the encoder threads. CLI `--png-level`.
+  Bench scenarios `warm_png_fast` / `warm_png_balanced` added for the size/time matrix.
+- **Optimization items 2, 3, 4 and 6 (written without compiling, no behaviour change, no new dependencies, no public API change):**
+  - *Geometry text (item 3):* new internal `fastfmt` module. `v` / `vn` / `vt` / `f` lines are written by hand into one pre-sized byte buffer (exact `{:.6}` fast path; falls back to the standard formatter near rounding ties, so the bytes are identical), and the UV
+    de-duplication uses an integer key in an Fx-style hasher instead of a formatted `String` per face corner. `-0.000000` stays distinct from `0.000000`, as before.
+  - *Atlas (item 2):* tiles are written row by row straight into the atlas (`blit_padded`; no per-pixel padding loop, no second copy); swatch baking/shrinking runs on worker threads (slot order, and therefore the atlas, is unchanged); the diffuse shrink and the
+    emissive / normal / pbr atlases are built on their own threads. At most `min(cores - 1, 8)` threads. Diagnostics keep their order. The resizer itself is untouched (still `image` Lanczos3), so pixels are identical.
+  - *Warm floor (item 4):* trimmed collision hulls are memoised per face cap inside the cached hull entry; the OBJ self-check scans the in-memory text (plus a length check of the written file) instead of re-reading 25 MB and allocating a `Vec` per line.
+  - *Pipeline (item 6):* VHACD starts on a background thread right after the prepare stage and is joined where the collision stage used to compute it. The thread stores its result in the cache itself (a cancelled run still leaves it). `Report::timings`: `collision` is now the wait,
+    `vhacd_generate` is the decomposition's own run time and overlaps atlas/geometry (docs in `report.rs` updated).
+  - Tests added: `fastfmt` unit tests (exact match with `format!("{:.6}")` on edge cases and 400k pseudo-random values), `atlas` unit tests (`blit_padded` vs the old per-pixel code, clipping, packing), integration `obj_text_has_six_decimals_and_no_duplicate_vt_lines`.
+  - **None of this has been compiled or run.** First thing to do on a machine with Rust: `cargo test --release`, then re-run `BENCHMARK.md` and compare with `OPTIMIZATION_PLAN.md` section 0.
+- **Default `png_level` is now `Balanced`** (was `Best`), chosen from the benchmark matrix (Porsche 35.6 -> 35.8 MB, Ninomae 12.77 -> 12.94 MB; encode 4-6x faster). Pixels are identical; `Best` stays available (`--png-level best`). Bench scenario `warm_png_balanced` became `warm_png_best`, because Balanced is now the base.
+- Diagnostics for the cold-atlas timing variation: `Report::timings` gains nested `atlas_swatches`, `atlas_pack`, `atlas_maps`; env var `VOTV_CONVERT_THREADS=<n>` overrides the number of swatch worker threads (default `min(cores-1, 8)`).
+- **Tried and reverted: per-material job pool for the extra atlas maps.** Splitting emissive/normal/pbr into (map, material) jobs on a worker pool measured *slower* on the 1k Porsche (cold 977 -> 1250 ms; 309 ms for the tiles plus 320 ms for laying out/shrinking) and only slightly
+  faster on Ninomae (atlas ~387 -> 326 ms), so the one-thread-per-map version stays. What stays from that attempt: `atlas::build_map` is built from `map_needed` / `map_tile` / `assemble_map`, `MapKind` is `Clone + Copy`, and the bench JSON records `env_votv_convert_threads`.
+  The unexplained part (why laying out and shrinking three maps in parallel took ~320 ms) is a lead for later; suspects are allocation / page-fault contention when several threads create 47 MB images at once on Windows.
+- `atlas::pad_edge` is now test-only (`#[cfg(test)]`), which removes the dead-code warning.
+- `examples/bench.rs`: the JSON now has an `inputs` array (path, bytes, modified time of every measured file), so two result files can be compared knowing the input did not change. Additive.
 - CLI is dev-only and no longer a default feature.
 - `show_collision` pushes the red copy only as far as needed to avoid z-fighting (auto: 0.2% of model size, 0.05-0.5 cm; was 1.5%, min 0.5 cm,
   with corners up to 2.5x further) and has a new option `show_collision_offset: Option<f64>` (cm, `None` = auto). Output of `--show-coll`

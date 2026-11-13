@@ -71,6 +71,7 @@ pub mod g {
     pub const RESET_IMAGE: Glyph = gs('\u{f824}'); // reset_image (Material Symbols): regenerate icon
     pub const RESTART_ALT: Glyph = gl('\u{e8ba}'); // restart_alt (circular arrow): reset to the default
     pub const EDIT: Glyph = gl('\u{e3c9}'); // edit
+    pub const TUNE: Glyph = gl('\u{e429}'); // tune (sliders): the Properties button
     pub const SEARCH: Glyph = gl('\u{e8b6}'); // search
     pub const ADD: Glyph = gl('\u{e145}'); // add
     pub const SETTINGS: Glyph = gl('\u{e8b8}'); // settings (gear)

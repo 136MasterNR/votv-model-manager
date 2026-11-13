@@ -153,6 +153,11 @@ fn choice(
 
 /// First batch of parameters. Still to add (next steps): lamp settings, texture filters, health / resistances,
 /// icon and sidecar output, output name and destination.
+/// The sections of the parameter table that are `properties.cfg` values: the only ones in properties-only mode.
+const PROPS_SECTIONS: [&str; 4] = ["DURABILITY", "MATERIAL", "LIGHT", "TEXTURE FILTERS"];
+/// The "Emissive strength" row of the TEXTURE FILTERS section only exists for properties-only mode (the converter editor has
+/// its own in TEXTURES): hidden there.
+const PROPS_EMISSIVE_ROW: (&str, &str) = ("TEXTURE FILTERS", "Emissive strength");
 const FILTER_LABELS: [&str; 4] = ["Nearest", "Bilinear", "Trilinear", "Default"];
 
 fn lamp_on(o: &Options) -> bool {
@@ -517,6 +522,16 @@ fn rows_flat() -> Vec<Row> {
             lamp_on
         ),
         Row::Header("TEXTURE FILTERS"),
+        // The same property as the "Emissive strength" row of TEXTURES (`PROPS_EMISSIVE_ROW`): shown only in properties-only
+        // mode, where the TEXTURES section (converter settings) is not. Greyed out while the model has no emissive map.
+        slider(
+            "Emissive strength",
+            (0.0, 50.0, 0.5),
+            (1, ""),
+            |o| o.properties.emissive_strength,
+            |o, v| o.properties.emissive_strength = v,
+            |o| o.emissive,
+        ),
         pchoice!("Diffuse", &FILTER_LABELS, "filter_diffuse_", always),
         pchoice!("PBR", &FILTER_LABELS, "filter_pbr_", always),
         pchoice!("Normal", &FILTER_LABELS, "filter_normal_", always),
@@ -622,6 +637,7 @@ pub fn reset_button_system(
     mut vis: Query<&mut Visibility>,
     mut defaults: Local<Option<Options>>,
 ) {
+    let _bench = crate::benchmark::sys("sys.conv_ui.reset_button_system");
     if !st.is_changed() && !refs.is_changed() {
         return;
     }
@@ -686,6 +702,7 @@ pub fn light_indicator_system(
     st: Res<ConvertState>,
     mut q: Query<&mut Node, With<LightIndicator>>,
 ) {
+    let _bench = crate::benchmark::sys("sys.conv_ui.light_indicator_system");
     let open = light
         .0
         .is_some_and(|l| sections.0.get(l).copied().unwrap_or(false));
@@ -712,6 +729,7 @@ pub fn limits_indicator_system(
     opts: Res<Opts>,
     mut q: Query<&mut Node, With<LimitsIndicator>>,
 ) {
+    let _bench = crate::benchmark::sys("sys.conv_ui.limits_indicator_system");
     let open = model
         .0
         .is_some_and(|m| sections.0.get(m).copied().unwrap_or(false));
@@ -738,6 +756,7 @@ pub fn hull_indicator_system(
     opts: Res<Opts>,
     mut q: Query<&mut Node, With<HullIndicator>>,
 ) {
+    let _bench = crate::benchmark::sys("sys.conv_ui.hull_indicator_system");
     let open = collision
         .0
         .is_some_and(|c| sections.0.get(c).copied().unwrap_or(false));
@@ -764,6 +783,7 @@ pub fn reset_sections_system(
     mut opts: ResMut<Opts>,
     mut was_editor: Local<bool>,
 ) {
+    let _bench = crate::benchmark::sys("sys.conv_ui.reset_sections_system");
     if *was_editor && !layout.converter {
         let collision_open = collision
             .0
@@ -818,6 +838,8 @@ pub struct ConvUiRefs {
     pub btn_back: Entity,
     pub close_x: Entity,
     pub btn_edit: Entity,
+    /// The orange Properties button (shown instead of Edit for a model without a saved .glb; `propsedit.rs`).
+    pub btn_props: Entity,
     pub panel_header: Entity,
     pub regen_text: Entity,
     // Properties panel header
@@ -1026,6 +1048,7 @@ pub fn slider_keys_system(
     mut d: ResMut<SliderDrag>,
     mut repeat: Local<Option<(KeyCode, f64)>>,
 ) {
+    let _bench = crate::benchmark::sys("sys.conv_ui.slider_keys_system");
     if d.held && !mouse.pressed(MouseButton::Left) {
         release(&mut st, &mut d); // safety net: a release event that never came
     }
@@ -1112,6 +1135,7 @@ pub fn slider_visuals_system(
     mut borders: Query<&mut BorderColor>,
     mut bgs: Query<&mut BackgroundColor>,
 ) {
+    let _bench = crate::benchmark::sys("sys.conv_ui.slider_visuals_system");
     for (idx, (row, r)) in rows.0.iter().zip(refs.rows.iter()).enumerate() {
         let (
             Row::Param(ParamDef {
@@ -1399,8 +1423,18 @@ pub fn build(
                     .filter(|(_, _, vis)| **vis != Visibility::Hidden)
                     .map(|(gt, d, _)| (gt.compute_transform().rotation, d.illuminance))
                     .collect(),
-                ambient: amb.brightness,
-                tonemapping: *tone,
+                // The world look is for looking at; a captured icon keeps the icon rig's curve and ambient, so it matches
+                // the icons of the list (the lights, camera and options still come from the preview).
+                ambient: if opts.thumb_lights {
+                    crate::gamerig::AMBIENT_BRIGHTNESS
+                } else {
+                    amb.brightness
+                },
+                tonemapping: if opts.thumb_lights {
+                    Tonemapping::None
+                } else {
+                    *tone
+                },
                 opts: opts.clone(),
             });
             icons::request_regen(&mut pipe, dir.clone(), None, 0, view);
@@ -2479,6 +2513,7 @@ pub fn build(
         btn_back: Entity::PLACEHOLDER,
         close_x: Entity::PLACEHOLDER,
         btn_edit: Entity::PLACEHOLDER,
+        btn_props: Entity::PLACEHOLDER,
         panel_header: Entity::PLACEHOLDER,
         regen_text,
         icon_box,
@@ -2548,6 +2583,7 @@ pub fn conv_ui_system(
     mut bgs: Query<&mut BackgroundColor>,
     mut text_colors: Query<&mut TextColor>,
 ) {
+    let _bench = crate::benchmark::sys("sys.conv_ui.conv_ui_system");
     if !st.is_changed()
         && !layout.is_changed()
         && !dd.is_changed()
@@ -2571,9 +2607,11 @@ pub fn conv_ui_system(
     show(&mut nodes, refs.btn_back, flex(layout.converter));
     show(&mut nodes, refs.close_x, flex(!layout.converter));
     show(&mut nodes, refs.panel_header, flex(!layout.converter));
+    // Properties-only mode (propsedit.rs): no logs (nothing is converted), and only the property sections below the header.
+    let props = st.props.is_some();
     show(&mut nodes, refs.sidebar, flex(conv));
-    show(&mut nodes, refs.log_panel, flex(conv && lp.open));
-    show(&mut nodes, refs.logs_btn, flex(conv));
+    show(&mut nodes, refs.log_panel, flex(conv && lp.open && !props));
+    show(&mut nodes, refs.logs_btn, flex(conv && !props));
     // The floating preview-options button: in the editor and under the list screen's preview.
     show(
         &mut nodes,
@@ -2627,6 +2665,7 @@ pub fn conv_ui_system(
             format!("{:.0}%   {}", fraction * 100.0, message),
             0,
         ),
+        Status::Done if st.props.is_some() => (true, 1.0, "Saved properties.cfg".to_string(), 2),
         Status::Done => (true, 1.0, "Generated successfully".to_string(), 2),
         Status::Failed(m) => (
             true,
@@ -2692,9 +2731,14 @@ pub fn conv_ui_system(
         sec.map(|s| sections.0.get(s).copied().unwrap_or(false))
             .unwrap_or(true)
     };
+    let mut section_hidden = false; // the section the loop is in is not shown in properties-only mode
+    let mut section_name = ""; // the header the loop is under
     for (idx, (row, r)) in defs.0.iter().zip(refs.rows.iter()).enumerate() {
         let def = match row {
-            Row::Header(_) => {
+            Row::Header(name) => {
+                section_name = *name;
+                section_hidden = props && !PROPS_SECTIONS.contains(name);
+                show(&mut nodes, r.node, flex(!section_hidden));
                 set_text(
                     &mut texts,
                     r.chev,
@@ -2708,7 +2752,12 @@ pub fn conv_ui_system(
             }
             Row::Param(def) => def,
         };
-        show(&mut nodes, r.node, flex(open(r.section)));
+        let props_only_row = (section_name, def.label) == PROPS_EMISSIVE_ROW;
+        show(
+            &mut nodes,
+            r.node,
+            flex(open(r.section) && !section_hidden && (props || !props_only_row)),
+        );
         if let Some(o) = r.overlay {
             show(&mut nodes, o, flex(!(def.show)(&st.opts)));
         }
@@ -2911,7 +2960,7 @@ fn info_groups(st: &ConvertState) -> Vec<InfoGroup> {
         });
     }
 
-    if stats.is_some_and(|s| s.has_emissive) {
+    if stats.is_some_and(|s| s.has_emissive) || (st.props.is_some() && st.props_emissive) {
         groups.push(InfoGroup {
             title: "Emissive",
             items: vec![item("Strength", num(p.emissive_strength))],
@@ -2961,6 +3010,7 @@ pub fn info_tree_system(
     refs: Res<ConvUiRefs>,
     mut last: Local<Option<Vec<InfoGroup>>>,
 ) {
+    let _bench = crate::benchmark::sys("sys.conv_ui.info_tree_system");
     let groups = info_groups(&st);
     if last.as_ref() == Some(&groups) {
         return;
@@ -3092,6 +3142,7 @@ pub fn props_icon_system(
     mut last: Local<(Option<PathBuf>, bool, bool, u32)>,
     mut requested: Local<Option<PathBuf>>,
 ) {
+    let _bench = crate::benchmark::sys("sys.conv_ui.props_icon_system");
     let saved = if layout.converter {
         st.saved.clone()
     } else {
@@ -3223,6 +3274,7 @@ fn apply_icon(png: &Path, conv: &mut ConvertState, layout: &mut Layout, edit: &m
 
 /// Click on the icon: choose a PNG in the file explorer.
 fn on_icon_click(t: Trigger<Pointer<Click>>, st: Res<ConvertState>, edit: Res<IconEdit>) {
+    let _bench = crate::benchmark::work("ui.conv_ui.on_icon_click");
     if t.event().button != PointerButton::Primary || st.saved.is_none() {
         return;
     }
@@ -3256,6 +3308,7 @@ pub fn icon_input_system(
     mut conv: ResMut<ConvertState>,
     mut layout: ResMut<Layout>,
 ) {
+    let _bench = crate::benchmark::sys("sys.conv_ui.icon_input_system");
     for e in events.read() {
         match e {
             FileDragAndDrop::HoveredFile { path_buf, .. } => {
@@ -3312,6 +3365,7 @@ pub fn icon_hint_system(
     mut texts: Query<&mut Text>,
     mut borders: Query<&mut BorderColor>,
 ) {
+    let _bench = crate::benchmark::sys("sys.conv_ui.icon_hint_system");
     let active = layout.converter && st.saved.is_some();
     let hovered = ints
         .get(refs.icon_box)
@@ -3363,21 +3417,29 @@ pub fn edit_button_system(
     layout: Res<Layout>,
     refs: Res<ConvUiRefs>,
     mut target: ResMut<EditTarget>,
+    mut props_target: ResMut<crate::propsedit::PropsTarget>,
     mut nodes: Query<&mut Node>,
     mut last: Local<(Option<usize>, u64, bool)>,
 ) {
+    let _bench = crate::benchmark::sys("sys.conv_ui.edit_button_system");
     let key = (lib.selected, lib.generation, layout.converter);
     if *last != key {
         *last = key;
-        let t = if layout.converter {
+        let selected = if layout.converter {
             None
         } else {
-            lib.selected
-                .and_then(|i| lib.entries.get(i))
-                .and_then(|e| find_glb(&e.dir))
+            lib.selected.and_then(|i| lib.entries.get(i))
         };
+        let t = selected.and_then(|e| find_glb(&e.dir));
         if target.0 != t {
             target.0 = t;
+        }
+        // A model without a saved .glb (not editable) and not disabled gets the Properties button instead of Edit.
+        let pt = selected
+            .filter(|e| !e.editable && !e.disabled && find_glb(&e.dir).is_none())
+            .map(|e| e.dir.clone());
+        if props_target.0 != pt {
+            props_target.0 = pt;
         }
     }
     let want = if target.0.is_some() && layout.preview_open && !layout.converter {
@@ -3388,6 +3450,16 @@ pub fn edit_button_system(
     if let Ok(mut n) = nodes.get_mut(refs.btn_edit) {
         if n.display != want {
             n.display = want;
+        }
+    }
+    let want_props = if props_target.0.is_some() && layout.preview_open && !layout.converter {
+        Display::Flex
+    } else {
+        Display::None
+    };
+    if let Ok(mut n) = nodes.get_mut(refs.btn_props) {
+        if n.display != want_props {
+            n.display = want_props;
         }
     }
 }
@@ -3441,6 +3513,7 @@ pub fn sidebar_scrollbar_system(
     computed: Query<&ComputedNode>,
     mut nodes: Query<&mut Node>,
 ) {
+    let _bench = crate::benchmark::sys("sys.conv_ui.sidebar_scrollbar_system");
     let (Ok((sp, g)), Ok(tr)) = (scrolls.get(refs.scroll), computed.get(refs.sb_track)) else {
         return;
     };
@@ -3470,6 +3543,7 @@ pub fn name_marquee_system(
     mut state: Local<(f32, f32)>, // (offset, seconds the pointer has been over the name)
     mut redraw: EventWriter<RequestRedraw>,
 ) {
+    let _bench = crate::benchmark::sys("sys.conv_ui.name_marquee_system");
     let editing = ed.is(Field::Rename);
     if let Ok(mut bg) = bgs.get_mut(refs.name_box) {
         let want = if editing { Color::srgb(0.10, 0.11, 0.13) } else { Color::NONE };
@@ -3518,6 +3592,7 @@ pub fn info_scrollbar_system(
     computed: Query<&ComputedNode>,
     mut nodes: Query<&mut Node>,
 ) {
+    let _bench = crate::benchmark::sys("sys.conv_ui.info_scrollbar_system");
     let (Ok((sp, g)), Ok(tr)) = (
         scrolls.get(refs.info_scroll),
         computed.get(refs.info_sb_track),

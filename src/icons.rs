@@ -35,8 +35,14 @@ use crate::Library;
 
 pub const ICON_PX: u32 = 128;
 const ICON_LAYER: usize = 2;
-const FRAMES_PER_ICON: u32 = 4; // spawn, upload, render, safety
-const MIN_ICON_SECS: f32 = 0.15; // also wait this long, so a very fast display cannot cut the render short
+/// Frames to wait before the screenshot: spawn, asset upload, render, and a few for safety.
+const FRAMES_PER_ICON: u32 = 6;
+/// Also wait this long, so a very fast display cannot cut the render short. It was 0.15 s: measured on a 180 Hz display
+/// every icon then took 176-199 ms (about 33 frames) for roughly 60 ms of real work, 42 s for a 223-icon library.
+/// Now an icon takes about max(6 frames, 0.05 s) plus the screenshot round trip (about 32 ms). There is deliberately
+/// no retry: a blank render is not saved and nothing is rendered again (the editor's "Capture as icon" can be blank on
+/// purpose).
+const MIN_ICON_SECS: f32 = 0.05;
 
 pub const ICON_FILE: &str = "icon.png";
 
@@ -159,6 +165,7 @@ pub fn request_regen(
     pipe.regen_rx = Some(Mutex::new(rx));
     pipe.regen_view = view;
     std::thread::spawn(move || {
+        let _bench = crate::benchmark::work("icon.regen_load_thread");
         let result = load_with_textures(&dir, ICON_KINDS, Some(ICON_TEX_PX));
         let _ = tx.send(RegenMsg {
             dir,
@@ -186,6 +193,7 @@ pub fn finish_icon(raw: &mut [u8]) -> bool {
 
 /// Decode an existing icon to 128x128 RGBA bytes (alpha kept, background left alone).
 pub fn read_icon(dir: &Path) -> Option<Vec<u8>> {
+    let _bench = crate::benchmark::work("icon.read_file");
     let bytes = std::fs::read(dir.join(ICON_FILE)).ok()?;
     let img = image::load_from_memory(&bytes).ok()?.to_rgba8();
     if img.pixels().all(|p| p.0[3] == 0) {
@@ -209,12 +217,20 @@ pub fn start_worker(jobs: Vec<(usize, PathBuf)>, gen: u64) -> Receiver<IconMsg> 
     let (tx, rx) = sync_channel::<IconMsg>(3);
     std::thread::spawn(move || {
         for (index, dir) in jobs {
+            let mut _job = crate::benchmark::work("icon.worker_job");
+            _job.detail_with(|| dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
             let result = match read_icon(&dir) {
-                Some(rgba) => Ok(IconSource::File(rgba)),
+                Some(rgba) => {
+                    crate::benchmark::count("icon.source_file", 1);
+                    Ok(IconSource::File(rgba))
+                }
                 None => {
+                    crate::benchmark::count("icon.source_model_needs_render", 1);
                     load_with_textures(&dir, ICON_KINDS, Some(ICON_TEX_PX)).map(IconSource::Model)
                 }
             };
+            // How long the worker waits for the main thread to take the result (the channel holds 3): backpressure.
+            let _wait = crate::benchmark::work("icon.worker_send_wait");
             if tx.send(IconMsg { gen, index, result }).is_err() {
                 break; // receiver dropped: a rescan replaced this worker
             }
@@ -233,6 +249,7 @@ pub fn icon_system(
     mut redraw: EventWriter<RequestRedraw>,
     time: Res<Time>,
 ) {
+    let _bench = crate::benchmark::sys("sys.icons.icon_system");
     if pipe.screens > 0 {
         redraw.write(RequestRedraw); // a saved icon is being captured; the window only redraws on demand
     }
@@ -268,14 +285,18 @@ pub fn icon_system(
                 if let Some(path) = save_to {
                     pipe.screens += 1;
                     let keep = image.clone();
+                    let shot_t0 = crate::benchmark::now();
                     commands.spawn(Screenshot::image(image)).observe(move |t: Trigger<ScreenshotCaptured>, mut pipe: ResMut<IconPipe>| {
                         let _keep = &keep;
+                        crate::benchmark::since("icon.screenshot_roundtrip", shot_t0, String::new);
+                        let _save = crate::benchmark::work("icon.readback_convert_save");
                         match t.event().0.clone().try_into_dynamic() {
                             Ok(img) => {
                                 let rgba = img.to_rgba8();
                                 let (w, h) = (rgba.width(), rgba.height());
                                 let mut raw = rgba.into_raw();
                                 if !finish_icon(&mut raw) {
+                                    crate::benchmark::count("icon.blank_render", 1); // also counts deliberate blank captures
                                     eprintln!("[icon] the rendered icon for {} came back blank; not saved", path.display());
                                 } else if let Err(e) = image::save_buffer(&path, &raw, w, h, image::ColorType::Rgba8) {
                                     eprintln!("[icon] could not save {}: {e}", path.display());
@@ -302,6 +323,10 @@ pub fn icon_system(
             }
         }
         let cur = pipe.current.take().unwrap();
+        crate::benchmark::note("icon.render_job_wall_ms", ((time.elapsed_secs() - cur.started) * 1000.0) as f64, || {
+            format!("regen={} frames={}", cur.regen, cur.frames)
+        });
+        crate::benchmark::note("icon.frames_per_job", cur.frames as f64, String::new);
         for e in &cur.ents {
             commands.entity(*e).despawn();
         }
@@ -428,16 +453,19 @@ pub fn icon_system(
         // A regeneration from the editor carries the preview's view and options; everything else uses the game's rig.
         let view = if regen { pipe.regen_view.take() } else { None };
         let opts = view.as_ref().map(|v| v.opts.clone()).unwrap_or_default();
-        let built = spawn_model(
-            &mut commands,
-            &mut meshes,
-            &mut mats,
-            &mut images,
-            &loaded,
-            layer.clone(),
-            &opts,
-            false,
-        );
+        let built = {
+            let _t = crate::benchmark::work("icon.spawn_model_main_thread");
+            spawn_model(
+                &mut commands,
+                &mut meshes,
+                &mut mats,
+                &mut images,
+                &loaded,
+                layer.clone(),
+                &opts,
+                false,
+            )
+        };
 
         let mut image = Image::new_fill(
             Extent3d {

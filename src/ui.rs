@@ -75,6 +75,8 @@ pub(crate) const EDGE_HOVER: Color = Color::srgb(0.45, 0.50, 0.60);
 pub(crate) const ACCENT: Color = Color::srgb(0.30, 0.58, 0.98);
 /// Edit (blue: "change it") and Export / Enable (green: "take it out / turn it on"); readable on the dark buttons.
 pub(crate) const EDIT_COL: Color = Color::srgb(0.47, 0.73, 1.0);
+/// The Properties button (a model without a saved .glb: edit `properties.cfg` only, see `propsedit.rs`).
+pub(crate) const PROPS_COL: Color = Color::srgb(1.0, 0.62, 0.22);
 pub(crate) const EXPORT_COL: Color = Color::srgb(0.46, 0.86, 0.56);
 pub(crate) const TEXT: Color = Color::srgb(0.90, 0.91, 0.93);
 pub(crate) const DIM: Color = Color::srgb(0.58, 0.60, 0.66);
@@ -120,7 +122,7 @@ pub struct OptLabel(pub OptKey);
 #[derive(Resource, Default)]
 pub struct FolderPick(pub Mutex<Option<Receiver<std::path::PathBuf>>>);
 
-/// The file dialog of the fake tile (a .glb to convert, or model .zip files to copy), running on its own thread.
+/// The file dialog of the fake tile (a .glb to convert, or model archives - .zip, .7z, .rar - to copy), running on its own thread.
 #[derive(Resource, Default)]
 pub struct FilePick(pub Mutex<Option<Receiver<Vec<std::path::PathBuf>>>>);
 
@@ -238,6 +240,7 @@ fn on_close(
     mut conv: ResMut<ConvertState>,
     mut lib: ResMut<Library>,
 ) {
+    let _bench = crate::benchmark::work("ui.ui.on_close");
     if l.converter {
         leave_converter(&mut l, &mut conv, &mut lib);
     } else {
@@ -245,22 +248,27 @@ fn on_close(
     }
 }
 fn on_close_preview(_: Trigger<Pointer<Click>>, mut l: ResMut<Layout>) {
+    let _bench = crate::benchmark::work("ui.ui.on_close_preview");
     l.preview_open = false;
 }
 fn on_toggle_options(_: Trigger<Pointer<Click>>, mut l: ResMut<Layout>) {
+    let _bench = crate::benchmark::work("ui.ui.on_toggle_options");
     l.options_open = !l.options_open;
 }
 /// Converter screen -> list/preview screen. Stops every running job; `preview_request` reloads the selected model.
 fn leave_converter(l: &mut Layout, conv: &mut ConvertState, lib: &mut Library) {
     l.converter = false;
-    // Back on the list the model that was edited (under its current name) stays selected.
-    if let Some(name) = conv
-        .saved
-        .as_ref()
-        .and_then(|p| p.file_name())
-        .map(|n| n.to_string_lossy().into_owned())
-    {
-        lib.select_name = Some(name);
+    // Back on the list the model that was edited (under its current name) stays selected. (Properties-only mode without
+    // a rename rescans nothing, so a name left in `select_name` would hijack the selection of a later rescan.)
+    if conv.props.is_none() || conv.saved_any {
+        if let Some(name) = conv
+            .saved
+            .as_ref()
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().into_owned())
+        {
+            lib.select_name = Some(name);
+        }
     }
     if conv.saved_any {
         lib.dirty = true; // models were saved: rescan the folder so they show up
@@ -276,6 +284,7 @@ fn on_edit(
     mut l: ResMut<Layout>,
     mut conv: ResMut<ConvertState>,
 ) {
+    let _bench = crate::benchmark::work("ui.ui.on_edit");
     let Some(glb) = target.0.clone() else { return };
     let restored = glb.parent().and_then(load_sidecar);
     l.converter = true;
@@ -287,10 +296,28 @@ fn on_edit(
         .and_then(|d| d.file_name())
         .map(|n| n.to_string_lossy().into_owned());
 }
+/// Properties button of the preview: edit only the `properties.cfg` of a model without a saved .glb (no converter).
+fn on_properties(
+    t: Trigger<Pointer<Click>>,
+    target: Res<crate::propsedit::PropsTarget>,
+    mut l: ResMut<Layout>,
+    mut conv: ResMut<ConvertState>,
+) {
+    let _bench = crate::benchmark::work("ui.ui.on_properties");
+    if t.event().button != PointerButton::Primary {
+        return;
+    }
+    let Some(dir) = target.0.clone() else { return };
+    l.converter = true;
+    l.preview_open = true;
+    conv.begin_props(dir);
+}
 fn on_refresh(_: Trigger<Pointer<Click>>, mut lib: ResMut<Library>) {
+    let _bench = crate::benchmark::work("ui.ui.on_refresh");
     lib.dirty = true;
 }
 fn on_pick_glb(t: Trigger<Pointer<Click>>, pick: Res<FilePick>) {
+    let _bench = crate::benchmark::work("ui.ui.on_pick_glb");
     if t.event().button != PointerButton::Primary {
         return;
     }
@@ -302,8 +329,8 @@ fn on_pick_glb(t: Trigger<Pointer<Click>>, pick: Res<FilePick>) {
     *slot = Some(rx);
     std::thread::spawn(move || {
         if let Some(list) = rfd::FileDialog::new()
-            .set_title("Choose a .glb to convert, or model .zip files to copy")
-            .add_filter("glb or zip", &["glb", "zip"])
+            .set_title("Choose a .glb to convert, or model .zip, .7z or .rar files to copy")
+            .add_filter("glb or archive", &["glb", "zip", "7z", "rar"])
             .pick_files()
         {
             let _ = tx.send(list);
@@ -311,6 +338,7 @@ fn on_pick_glb(t: Trigger<Pointer<Click>>, pick: Res<FilePick>) {
     });
 }
 fn on_browse(_: Trigger<Pointer<Click>>, lib: Res<Library>, pick: Res<FolderPick>) {
+    let _bench = crate::benchmark::work("ui.ui.on_browse");
     let mut slot = pick.0.lock().unwrap();
     if slot.is_some() {
         return; // a dialog is already open
@@ -399,6 +427,7 @@ pub fn setup(
     rows: Res<ParamRows>,
     mut fonts: ResMut<Assets<Font>>,
 ) {
+    let _bench = crate::benchmark::work("startup.ui.setup");
     let iconfont = IconFont::new(&mut fonts);
     commands.spawn((Camera2d, IsDefaultUiCamera));
     let stage = preview::spawn_stage(&mut commands, &mut images);
@@ -757,7 +786,7 @@ pub fn setup(
         drop_overlay,
         (
             txt(
-                "Release to convert a .glb, or to copy a model .zip",
+                "Release to convert a .glb, or to copy a model .zip / .7z / .rar",
                 18.0,
                 TEXT,
             ),
@@ -893,6 +922,43 @@ pub fn setup(
         ),
     );
     commands.entity(btn_edit).observe(on_edit);
+    // Same place as Edit: a model has one or the other (`edit_button_system`).
+    let btn_props = child(
+        &mut commands,
+        panel_header,
+        (
+            Button,
+            Node {
+                width: Val::Auto,
+                padding: UiRect::horizontal(Val::Px(10.0)),
+                height: Val::Px(22.0),
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
+                flex_shrink: 0.0,
+                display: Display::None, // shown by edit_button_system when the model has no saved .glb
+                ..default()
+            },
+            BackgroundColor(BTN),
+            BorderRadius::all(Val::Px(4.0)),
+        ),
+    );
+    child(
+        &mut commands,
+        btn_props,
+        icon(&iconfont, g::TUNE, 16.0, PROPS_COL),
+    );
+    child(
+        &mut commands,
+        btn_props,
+        (
+            txt("Properties", 13.0, PROPS_COL),
+            Node {
+                margin: UiRect::left(Val::Px(4.0)),
+                ..default()
+            },
+        ),
+    );
+    commands.entity(btn_props).observe(on_properties);
     let btn_export = child(
         &mut commands,
         panel_header,
@@ -1182,6 +1248,7 @@ pub fn setup(
     conv_refs.close_btn = close_btn;
     conv_refs.eye_btn = eye_btn;
     conv_refs.btn_edit = btn_edit;
+    conv_refs.btn_props = btn_props;
     conv_refs.panel_header = panel_header;
     commands.insert_resource(conv_refs);
     // Dragging a .glb over the converter screen: the preview is the drop target (added last so it draws on top).
@@ -1220,6 +1287,8 @@ pub fn setup(
     commands.insert_resource(overlay);
     let dialog_refs = crate::dialog::build_dialog(&mut commands, root, &iconfont);
     commands.insert_resource(dialog_refs);
+    let pick_refs = crate::importpick::build(&mut commands, root);
+    commands.insert_resource(pick_refs);
     let settings = listmenu::build_settings_menu(&mut commands, root, btn_settings, &iconfont);
     commands.entity(settings.folder).observe(on_browse);
     commands.entity(settings.refresh).observe(on_refresh);
@@ -1404,14 +1473,14 @@ fn spawn_fake_tile(commands: &mut Commands, grid: Entity, font: &IconFont, lines
     tile
 }
 
-/// The one fake tile of the list (first in EDITABLE): drop a .glb (opens the editor) or a model .zip (copied into the
-/// printer folder, see import.rs) on the window, or click it to choose either with the file explorer.
+/// The one fake tile of the list (first in EDITABLE): drop a .glb (opens the editor) or a model archive (.zip, .7z, .rar:
+/// copied into the printer folder, see import.rs) on the window, or click it to choose either with the file explorer.
 fn spawn_drop_tile(commands: &mut Commands, grid: Entity, font: &IconFont) {
     let tile = spawn_fake_tile(
         commands,
         grid,
         font,
-        &["Drop a .glb or", ".zip here, or", "click to browse"],
+        &["Drop a glb or", "an archive here"],
     );
     commands.entity(tile).observe(on_pick_glb);
 }
@@ -1430,6 +1499,7 @@ pub fn rescan(
     }
     lib.dirty = false;
     lib.generation += 1;
+    let mut _bench = crate::benchmark::work("lib.rescan");
     // Keep the selection across the rescan: by name (a renamed / edited model is named by `select_name`).
     let explicit = lib.select_name.take();
     // A just-edited / renamed / imported model replaces the selection; otherwise every selected model is kept (by name).
@@ -1448,9 +1518,16 @@ pub fn rescan(
     for h in &extras {
         commands.entity(h).despawn();
     }
-    let mut list = scan_models(&lib.root);
-    sort_entries(&mut list, sorting.modes);
+    let mut list = {
+        let _b = crate::benchmark::work("lib.scan_models");
+        scan_models(&lib.root)
+    };
+    {
+        let _b = crate::benchmark::work("lib.sort_entries");
+        sort_entries(&mut list, sorting.modes);
+    }
     lib.entries = list;
+    _bench.detail_with(|| format!("{} models", lib.entries.len()));
     lib.selected = keep_active.and_then(|n| lib.entries.iter().position(|e| e.name == n));
     let mut selection: std::collections::BTreeSet<usize> =
         keep_all.iter().filter_map(|n| lib.entries.iter().position(|e| &e.name == n)).collect();
@@ -1460,6 +1537,8 @@ pub fn rescan(
     lib.anchor = lib.selected;
     lib.selection = selection;
 
+    let mut _tiles_bench = crate::benchmark::work("lib.spawn_tiles");
+    _tiles_bench.detail_with(|| format!("{} tiles", lib.entries.len()));
     let mut tiles = Vec::with_capacity(lib.entries.len());
     // Three permanent sections, in this order: EDITABLE (models with a saved .glb; starts with the drop / pick tile),
     // MODELS. Entries are sorted by section, so a section is opened when the first entry of it (or of a
@@ -1638,6 +1717,7 @@ pub fn rescan(
                     return;
                 }
                 *last = (now, pos);
+                crate::benchmark::event("ui.tile_click", String::new);
                 let secondary = match t.event().button {
                     PointerButton::Primary => false,
                     PointerButton::Secondary => true,
@@ -1711,6 +1791,7 @@ pub fn rescan(
         );
     }
     lib.tiles = tiles;
+    drop(_tiles_bench);
     // The scroll position is kept on a refresh (the layout clamps it if the list got shorter).
 
     // Restart icon generation for the new list.
@@ -1733,7 +1814,7 @@ fn has_ext(p: &std::path::Path, ext: &str) -> bool {
     p.extension().is_some_and(|e| e.eq_ignore_ascii_case(ext))
 }
 
-/// The file dialog of the fake tile finished: convert the chosen .glb and copy the chosen .zip files, like dropped ones.
+/// The file dialog of the fake tile finished: convert the chosen .glb and copy the chosen archives, like dropped ones.
 pub fn poll_file_pick(
     pick: Res<FilePick>,
     lib: Res<Library>,
@@ -1742,20 +1823,24 @@ pub fn poll_file_pick(
     mut import: ResMut<crate::import::ImportJob>,
     mut redraw: EventWriter<RequestRedraw>,
 ) {
+    let _bench = crate::benchmark::sys("sys.ui.poll_file_pick");
     let mut slot = pick.0.lock().unwrap();
     let res = slot.as_ref().map(|rx| rx.try_recv());
     match res {
         Some(Ok(list)) => {
             *slot = None;
             layout.notice = None;
-            let zips: Vec<std::path::PathBuf> =
-                list.iter().filter(|p| has_ext(p, "zip")).cloned().collect();
-            if !zips.is_empty() {
+            let archives: Vec<std::path::PathBuf> = list
+                .iter()
+                .filter(|p| crate::import::is_archive(p))
+                .cloned()
+                .collect();
+            if !archives.is_empty() {
                 if import.busy() {
                     layout.notice = Some("Still copying the previous drop".to_string());
                 } else {
                     layout.notice = Some("Copying...".to_string());
-                    crate::import::start(&mut import, lib.root.clone(), zips);
+                    crate::import::start(&mut import, lib.root.clone(), archives);
                 }
             }
             if let Some(glb) = list.into_iter().find(|p| has_ext(p, "glb")) {
@@ -1777,6 +1862,7 @@ pub fn poll_folder_pick(
     mut lib: ResMut<Library>,
     mut redraw: EventWriter<RequestRedraw>,
 ) {
+    let _bench = crate::benchmark::sys("sys.ui.poll_folder_pick");
     let mut slot = pick.0.lock().unwrap();
     let res = slot.as_ref().map(|rx| rx.try_recv());
     match res {
@@ -1803,6 +1889,7 @@ pub fn layout_system(
     windows: Query<&Window, With<PrimaryWindow>>,
     mut nodes: Query<&mut Node>,
 ) {
+    let _bench = crate::benchmark::sys("sys.ui.layout_system");
     fn set_display(nodes: &mut Query<&mut Node>, e: Entity, d: Display) {
         if let Ok(mut n) = nodes.get_mut(e) {
             if n.display != d {
@@ -1880,6 +1967,7 @@ pub fn drop_events(
     lib: Res<Library>,
     mut import: ResMut<crate::import::ImportJob>,
 ) {
+    let _bench = crate::benchmark::sys("sys.ui.drop_events");
     let mut to_import: Vec<std::path::PathBuf> = Vec::new();
     for e in events.read() {
         match e {
@@ -1912,7 +2000,7 @@ pub fn drop_events(
                     .unwrap_or(false);
                 if is_glb {
                     layout.notice = None;
-                    if layout.converter && conv.input.is_some() {
+                    if layout.converter && conv.input.is_some() && conv.props.is_none() {
                         // Already editing a model: ask before replacing it (dialog.rs) unless the user turned the
                         // question off. Either way the dropped file replaces the CURRENT model.
                         if dialog.dont_ask {
@@ -1926,8 +2014,8 @@ pub fn drop_events(
                         layout.preview_open = true;
                         conv.begin(path_buf.clone());
                     }
-                } else if has_ext(path_buf, "zip") {
-                    // a model .zip: copied into the printer folder (import.rs)
+                } else if crate::import::is_archive(path_buf) {
+                    // a model archive (.zip, .7z, .rar): copied into the printer folder (import.rs)
                     to_import.push(path_buf.clone());
                 } else {
                     let name = path_buf
@@ -1935,7 +2023,7 @@ pub fn drop_events(
                         .map(|n| n.to_string_lossy().into_owned())
                         .unwrap_or_default();
                     layout.notice = Some(format!(
-                        "Only .glb files (to convert) and .zip files (to copy) are accepted ({name} was ignored)"
+                        "Only .glb files (to convert) and .zip, .7z or .rar files (to copy) are accepted ({name} was ignored)"
                     ));
                 }
             }
@@ -1944,7 +2032,7 @@ pub fn drop_events(
     if !to_import.is_empty() {
         if layout.converter {
             layout.notice = Some(
-                "Drop .zip files on the model list, not while editing a model"
+                "Drop archives on the model list, not while editing a model"
                     .to_string(),
             );
         } else if import.busy() {
@@ -1961,6 +2049,7 @@ pub fn tile_styles(
     mut q: Query<(&Tile, &Interaction, &mut BorderColor)>,
     changed: Query<(), (With<Tile>, Changed<Interaction>)>,
 ) {
+    let _bench = crate::benchmark::sys("sys.ui.tile_styles");
     if !lib.is_changed() && changed.is_empty() {
         return;
     }
@@ -1989,6 +2078,7 @@ pub fn button_colors(
         ),
     >,
 ) {
+    let _bench = crate::benchmark::sys("sys.ui.button_colors");
     for (i, mut bg, item) in &mut q {
         bg.0 = match (*i, item) {
             (Interaction::Pressed, _) => BTN_PRESS,
@@ -2011,6 +2101,7 @@ pub fn wheel_system(
     overlays: Query<(), With<crate::conv_ui::RowOverlay>>,
     mut orbit: ResMut<Orbit>,
 ) {
+    let _bench = crate::benchmark::sys("sys.ui.wheel_system");
     for ev in wheel.read() {
         let (px, notches) = match ev.unit {
             MouseScrollUnit::Line => (ev.y * 56.0, ev.y),
@@ -2056,6 +2147,7 @@ pub fn scrollbar_system(
     computed: Query<&ComputedNode>,
     mut nodes: Query<&mut Node>,
 ) {
+    let _bench = crate::benchmark::sys("sys.ui.scrollbar_system");
     let (Ok((sp, g)), Ok(tr)) = (grids.get(refs.grid), computed.get(refs.track)) else {
         return;
     };
@@ -2091,6 +2183,7 @@ pub fn status_text(
     refs: Res<UiRefs>,
     mut texts: Query<&mut Text, Without<OptLabel>>,
 ) {
+    let _bench = crate::benchmark::sys("sys.ui.status_text");
     if !lib.is_changed() && !pipe.is_changed() && !layout.is_changed() && !conv.is_changed() {
         return;
     }

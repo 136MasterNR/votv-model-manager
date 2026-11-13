@@ -435,8 +435,21 @@ fn commit(
     match field {
         Field::Rename => {
             if !text.is_empty() && text != model_name(st) {
+                if let Some(dir) = st.props.clone() {
+                    // Properties-only mode: nothing is converted, the folder and its files are renamed directly (like
+                    // Rename on a tile); `rename_model` refuses a name that is taken.
+                    let name = votv_convert::sanitize_name(&text);
+                    if !name.is_empty() && name != model_name(st) {
+                        match rename_model(&dir, &name) {
+                            Ok(new_dir) => {
+                                layout.notice = None;
+                                crate::propsedit::renamed(st, lib, new_dir, name);
+                            }
+                            Err(m) => layout.notice = Some(m),
+                        }
+                    }
                 // Saving under the name of ANOTHER model would replace that model: refuse and keep the current name.
-                if st.name_taken(&lib.root, &text) {
+                } else if st.name_taken(&lib.root, &text) {
                     layout.notice = Some(format!(
                         "A model named \"{}\" already exists. Choose another name.",
                         votv_convert::sanitize_name(&text)
@@ -505,6 +518,7 @@ pub fn edit_input_system(
     mut lib: ResMut<Library>,
     mut layout: ResMut<Layout>,
 ) {
+    let _bench = crate::benchmark::sys("sys.textedit.edit_input_system");
     if !ed.active() {
         return;
     }
@@ -696,6 +710,7 @@ pub fn edit_visuals_system(
     mut redraw: EventWriter<RequestRedraw>,
     mut last: Local<Option<(Field, Geom)>>,
 ) {
+    let _bench = crate::benchmark::sys("sys.textedit.edit_visuals_system");
     let set_text = |texts: &mut Query<&mut Text>, e: Entity, s: String| {
         if let Ok(mut t) = texts.get_mut(e) {
             if t.0 != s {

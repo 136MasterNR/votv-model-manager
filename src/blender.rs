@@ -226,6 +226,7 @@ pub fn start(job: &mut BlenderJob, exe: PathBuf, input: PathBuf) {
 }
 
 fn run(exe: &Path, input: &Path) -> Outcome {
+    let _bench = crate::benchmark::work("blender.run");
     if !input.is_file() {
         return Outcome::Failed(format!("{} does not exist (yet)", input.display()));
     }
@@ -254,6 +255,7 @@ pub fn on_click(
     install: Res<BlenderInstall>,
     mut job: ResMut<BlenderJob>,
 ) {
+    let _bench = crate::benchmark::work("ui.blender.on_click");
     if t.event().button != PointerButton::Primary {
         return;
     }
@@ -269,6 +271,7 @@ pub fn button_system(
     install: Res<BlenderInstall>,
     mut q: Query<&mut Node, With<BlenderButton>>,
 ) {
+    let _bench = crate::benchmark::sys("sys.blender.button_system");
     let on =
         layout.converter && conv.input.as_deref().is_some_and(supported) && install.0.is_some();
     let want = if on { Display::Flex } else { Display::None };
@@ -287,6 +290,7 @@ pub fn button_colors(
         (Changed<Interaction>, With<BlenderButton>),
     >,
 ) {
+    let _bench = crate::benchmark::sys("sys.blender.button_colors");
     for (i, mut bg, mut border) in &mut q {
         let (b, o) = match *i {
             Interaction::Pressed => (BLUE_PRESS, BLENDER_ORANGE),
@@ -300,6 +304,7 @@ pub fn button_colors(
 
 /// Collects the result of a start and reports it on the status line.
 pub fn poll_system(mut job: ResMut<BlenderJob>, mut layout: ResMut<Layout>) {
+    let _bench = crate::benchmark::sys("sys.blender.poll_system");
     let outcome = match job.rx.as_ref() {
         None => return,
         Some(rx) => match rx.lock().unwrap().try_recv() {
@@ -328,6 +333,7 @@ pub fn on_pick_click(
     install: Res<BlenderInstall>,
     pick: Res<BlenderPick>,
 ) {
+    let _bench = crate::benchmark::work("ui.blender.on_pick_click");
     if t.event().button != PointerButton::Primary {
         return;
     }
@@ -361,6 +367,7 @@ pub fn pick_system(
     mut install: ResMut<BlenderInstall>,
     mut layout: ResMut<Layout>,
 ) {
+    let _bench = crate::benchmark::sys("sys.blender.pick_system");
     let mut slot = pick.0.lock().unwrap();
     let Some(rx) = slot.as_ref() else { return };
     match rx.try_recv() {

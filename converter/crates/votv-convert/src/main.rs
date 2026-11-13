@@ -4,7 +4,7 @@ use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
 
 use clap::Parser;
-use votv_convert::{CollisionQuality, ConvertOptions, EmissiveMode, Hooks, OverwritePolicy, Severity};
+use votv_convert::{CollisionQuality, ConvertOptions, EmissiveMode, Hooks, OverwritePolicy, PngLevel, Severity};
 
 #[derive(Parser)]
 #[command(name = "votv-convert", version, about = "Convert a GLB into a VotV 3D Printer style folder.")]
@@ -60,6 +60,9 @@ struct Cli {
     /// multiplier 0-1 for metallic values in the pbr map (1 = as authored)
     #[arg(long, default_value_t = 1.0)]
     metallic_scale: f64,
+    /// PNG compression effort: fast, balanced (default) or best (smallest files, several times slower)
+    #[arg(long, value_enum, default_value = "balanced")]
+    png_level: PngArg,
     /// follow the file's emissive data literally (no toon-shader detection)
     #[arg(long)]
     literal_emissive: bool,
@@ -116,6 +119,13 @@ enum Overwrite {
     Replace,
     Fail,
     Rename,
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum PngArg {
+    Fast,
+    Balanced,
+    Best,
 }
 
 #[derive(Clone, Copy, clap::ValueEnum)]
@@ -176,6 +186,7 @@ fn main() {
         metallic_max: cli.metallic_max,
         emissive_mode: if cli.literal_emissive { EmissiveMode::Literal } else { EmissiveMode::Auto },
         drop_outline_parts: !cli.keep_outlines,
+        png_level: match cli.png_level { PngArg::Fast => PngLevel::Fast, PngArg::Balanced => PngLevel::Balanced, PngArg::Best => PngLevel::Best },
         ..Default::default()
     };
     opts.properties.physical_material = cli.physical_material;

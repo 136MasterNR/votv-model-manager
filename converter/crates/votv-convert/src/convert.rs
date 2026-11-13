@@ -5,16 +5,17 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use image::{DynamicImage, RgbaImage};
+use image::RgbaImage;
 use votv_model_core::{bites_for, texture_file_name, PropertiesCfg, TextureKind};
 
 use crate::atlas::{self, MapKind, SwatchKey};
 use crate::cache::{AtlasEntry, AtlasKey, GeoEntry, GeoKey, HullEntry, HullKey, SceneEntry, SceneKey};
 use crate::collision::{self, Mesh};
 use crate::error::{ConvertError, Result};
+use crate::fastfmt::{fix6, push_line3, push_uint, write_fix6, FxBuild};
 use crate::geom::*;
 use crate::icon::{self, IconTri};
-use crate::options::{ConvertOptions, OverwritePolicy};
+use crate::options::{ConvertOptions, OverwritePolicy, PngLevel};
 use crate::report::*;
 use crate::scene::{self, Material, Part, Scene};
 use crate::tiling;
@@ -136,14 +137,28 @@ fn find_duplicate_parts(parts: &[Part], sc: &Scene, ctx: &mut Ctx) -> std::colle
     drop
 }
 
-/// 8-bit PNG with the best compression (slow for big atlases, which is why the bytes are cached).
-fn encode_png(img: &RgbaImage, rgb: bool) -> Result<Vec<u8>> {
+/// 8-bit PNG. No copies of the atlas are made: RGBA is encoded straight from the image buffer, RGB from one packed buffer.
+fn encode_png(img: &RgbaImage, rgb: bool, level: PngLevel) -> Result<Vec<u8>> {
     use image::codecs::png::{CompressionType, FilterType, PngEncoder};
-    let d = DynamicImage::ImageRgba8(img.clone());
-    let d = if rgb { DynamicImage::ImageRgb8(d.into_rgb8()) } else { d };
+    use image::{ExtendedColorType, ImageEncoder};
+    let (compression, filter) = match level {
+        PngLevel::Fast => (CompressionType::Fast, FilterType::Sub),
+        PngLevel::Balanced => (CompressionType::Default, FilterType::Adaptive),
+        PngLevel::Best => (CompressionType::Best, FilterType::Adaptive),
+    };
+    let (w, h) = img.dimensions();
     let mut buf: Vec<u8> = Vec::new();
-    let enc = PngEncoder::new_with_quality(&mut buf, CompressionType::Best, FilterType::Adaptive);
-    d.write_with_encoder(enc).map_err(|e| ConvertError::Internal(format!("could not encode a PNG: {e}")))?;
+    let enc = PngEncoder::new_with_quality(&mut buf, compression, filter);
+    let fail = |e: image::ImageError| ConvertError::Internal(format!("could not encode a PNG: {e}"));
+    if rgb {
+        let mut raw: Vec<u8> = Vec::with_capacity(w as usize * h as usize * 3);
+        for px in img.as_raw().chunks_exact(4) {
+            raw.extend_from_slice(&px[..3]);
+        }
+        enc.write_image(&raw, w, h, ExtendedColorType::Rgb8).map_err(fail)?;
+    } else {
+        enc.write_image(img.as_raw(), w, h, ExtendedColorType::Rgba8).map_err(fail)?;
+    }
     Ok(buf)
 }
 
@@ -152,12 +167,13 @@ fn write_png_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
 }
 
 fn save_png(img: &RgbaImage, rgb: bool, path: &Path) -> Result<()> {
-    write_png_bytes(path, &encode_png(img, rgb)?)
+    write_png_bytes(path, &encode_png(img, rgb, PngLevel::Balanced)?)
 }
 
 impl AtlasEntry {
-    /// Compressed PNG of one map (0 diffuse, 1 emissive, 2 normal, 3 pbr), encoded on first use and kept.
-    fn png_bytes(&self, slot: usize, rgb: bool) -> Result<Arc<Vec<u8>>> {
+    /// Compressed PNG of one map (0 diffuse, 1 emissive, 2 normal, 3 pbr). Encoded on first use per level and kept; each map has its own lock,
+    /// so different maps can be compressed at the same time.
+    fn png_bytes(&self, slot: usize, rgb: bool, level: PngLevel) -> Result<Arc<Vec<u8>>> {
         let img = match slot {
             0 => Some(&self.diffuse),
             1 => self.emissive.as_ref(),
@@ -165,14 +181,51 @@ impl AtlasEntry {
             _ => self.pbr.as_ref(),
         }
         .ok_or_else(|| ConvertError::Internal("requested a map that was not built".into()))?;
-        let mut guard = self.png.lock().map_err(|_| ConvertError::Internal("png cache lock poisoned".into()))?;
-        if let Some(b) = &guard[slot] {
-            return Ok(b.clone());
+        let mut guard = self.png[slot].lock().map_err(|_| ConvertError::Internal("png cache lock poisoned".into()))?;
+        if let Some((l, b)) = guard.as_ref() {
+            if *l == level {
+                return Ok(b.clone());
+            }
         }
-        let bytes = Arc::new(encode_png(img, rgb)?);
-        guard[slot] = Some(bytes.clone());
+        let bytes = Arc::new(encode_png(img, rgb, level)?);
+        *guard = Some((level, bytes.clone()));
         Ok(bytes)
     }
+}
+
+/// The maps are compressed on their own threads as soon as the atlas exists, while geometry and collision are computed, and collected when the files are written.
+struct PngJobs {
+    handles: [Option<std::thread::JoinHandle<Result<Arc<Vec<u8>>>>>; 4],
+}
+
+fn spawn_png_jobs(a: &Arc<AtlasEntry>, level: PngLevel) -> PngJobs {
+    let present = [true, a.emissive.is_some(), a.normal.is_some(), a.pbr.is_some()];
+    let rgb = [false, false, true, true];
+    let mut handles: [Option<std::thread::JoinHandle<Result<Arc<Vec<u8>>>>>; 4] = [None, None, None, None];
+    for slot in 0..4 {
+        if present[slot] {
+            let a2 = a.clone();
+            let is_rgb = rgb[slot];
+            handles[slot] = Some(std::thread::spawn(move || a2.png_bytes(slot, is_rgb, level)));
+        }
+    }
+    PngJobs { handles }
+}
+
+impl PngJobs {
+    fn take(&mut self, slot: usize) -> Result<Arc<Vec<u8>>> {
+        match self.handles[slot].take() {
+            Some(h) => h.join().map_err(|_| ConvertError::Internal("a PNG encoder thread panicked".into()))?,
+            None => Err(ConvertError::Internal("requested a map that was not built".into())),
+        }
+    }
+}
+
+/// Collision hulls come from the cache or from a VHACD run that was started in the background right after the parts were prepared
+/// (it depends on nothing but the parts, so it overlaps the atlas, geometry and PNG work).
+enum HullSource {
+    Cached(Arc<HullEntry>),
+    Running(std::thread::JoinHandle<Arc<HullEntry>>),
 }
 
 fn perm_or_io(e: std::io::Error, path: &Path) -> ConvertError {
@@ -184,31 +237,83 @@ fn perm_or_io(e: std::io::Error, path: &Path) -> ConvertError {
 }
 
 /// Bake the swatches, pack the atlas and build the emissive / normal / pbr atlases (everything texture related).
+/// Threads for the independent texture jobs: leave one core for the UI, never more than 8, never more than there are jobs.
+/// Diagnostic override: the environment variable `VOTV_CONVERT_THREADS` (a number >= 1) replaces the automatic choice, to measure how the
+/// thread count affects timings on a given machine. Only the swatch workers use this; the four atlas/PNG jobs and VHACD have their own threads.
+fn worker_count(jobs: usize) -> usize {
+    let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+    let auto = cores.saturating_sub(1).clamp(1, 8);
+    let n = std::env::var("VOTV_CONVERT_THREADS").ok().and_then(|v| v.trim().parse::<usize>().ok()).filter(|n| *n >= 1).unwrap_or(auto);
+    n.min(jobs.max(1))
+}
+
+fn texture_thread_panicked() -> ConvertError {
+    ConvertError::Internal("a texture worker thread panicked".into())
+}
+
 fn build_atlas(opts: &ConvertOptions, sc: &Scene, parts: &[Part], ctx: &mut Ctx) -> Result<AtlasEntry> {
     ctx.progress(Stage::Atlas, 0.20, "Building the texture atlas");
+    // 1. which parts share a tile (cheap, in part order so slot numbers do not depend on threads)
     let mut key_index: HashMap<SwatchKey, usize> = HashMap::new();
-    let mut swatches: Vec<RgbaImage> = Vec::new();
-    let mut real_uv: Vec<bool> = Vec::new();
     let mut slot_mat: Vec<Option<&Material>> = Vec::new();
     let mut part_slot: Vec<usize> = Vec::new();
     for p in parts {
         let m = p.material.map(|i| &sc.materials[i]);
         let key = atlas::material_key(m, &sc.textures);
+        let next = slot_mat.len();
         let slot = *key_index.entry(key).or_insert_with(|| {
-            let (mut img, real) = atlas::material_swatch(m, &sc.textures, opts.apply_base_color_factor);
-            let (w, h) = img.dimensions();
-            if w > opts.max_tile_size || h > opts.max_tile_size {
-                let (nw, nh) = atlas::thumbnail_size(w, h, opts.max_tile_size);
-                img = atlas::resize_rgba(&img, nw, nh);
-            }
-            swatches.push(img);
-            real_uv.push(real);
             slot_mat.push(m);
-            swatches.len() - 1
+            next
         });
         part_slot.push(slot);
     }
-    let unique_materials = swatches.len();
+    let unique_materials = slot_mat.len();
+
+    let t_swatches = std::time::Instant::now();
+    // 2. bake and shrink every swatch; slots are independent, so they are spread over worker threads (the result is the same as one by one)
+    let (tile_cap, apply_factor) = (opts.max_tile_size, opts.apply_base_color_factor);
+    let make = |m: Option<&Material>| -> (RgbaImage, bool) {
+        let (mut img, real) = atlas::material_swatch(m, &sc.textures, apply_factor);
+        let (w, h) = img.dimensions();
+        if w > tile_cap || h > tile_cap {
+            let (nw, nh) = atlas::thumbnail_size(w, h, tile_cap);
+            img = atlas::resize_rgba(&img, nw, nh);
+        }
+        (img, real)
+    };
+    let mut made: Vec<Option<(RgbaImage, bool)>> = (0..unique_materials).map(|_| None).collect();
+    let workers = worker_count(unique_materials);
+    if workers <= 1 {
+        for (i, m) in slot_mat.iter().enumerate() {
+            made[i] = Some(make(*m));
+        }
+    } else {
+        let joined = std::thread::scope(|s| {
+            let handles: Vec<_> = (0..workers)
+                .map(|t| {
+                    let slot_mat = &slot_mat;
+                    let make = &make;
+                    s.spawn(move || (t..slot_mat.len()).step_by(workers).map(|i| (i, make(slot_mat[i]))).collect::<Vec<_>>())
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join()).collect::<Vec<_>>()
+        });
+        for j in joined {
+            for (i, item) in j.map_err(|_| texture_thread_panicked())? {
+                made[i] = Some(item);
+            }
+        }
+    }
+    let mut swatches: Vec<RgbaImage> = Vec::with_capacity(unique_materials + 1);
+    let mut real_uv: Vec<bool> = Vec::with_capacity(unique_materials + 1);
+    for item in made {
+        let (img, real) = item.ok_or_else(texture_thread_panicked)?;
+        swatches.push(img);
+        real_uv.push(real);
+    }
+    ctx.timings.push(("atlas_swatches", t_swatches.elapsed().as_micros() as u64));
+    ctx.check_cancel()?;
+
     let red_slot = if opts.show_collision {
         swatches.push(RgbaImage::from_pixel(32, 32, image::Rgba([255, 0, 0, 255])));
         real_uv.push(false);
@@ -218,33 +323,56 @@ fn build_atlas(opts: &ConvertOptions, sc: &Scene, parts: &[Part], ctx: &mut Ctx)
         None
     };
 
+    let t_pack = std::time::Instant::now();
     let (atlas_img, placements) = atlas::pack(&swatches);
+    ctx.timings.push(("atlas_pack", t_pack.elapsed().as_micros() as u64));
     ctx.info(DiagCode::AtlasPacked, format!(
         "Packed {} texture(s)/color(s) into a {}x{} atlas ({}px edge padding per tile).",
         swatches.len(), atlas_img.width(), atlas_img.height(), atlas::PAD));
     ctx.check_cancel()?;
 
+    // 3. the diffuse shrink and the emissive / normal / pbr atlases do not depend on each other: one thread each
+    // (a per-material job pool for the extra maps was tried and measured slower on the Porsche, 1250 vs 977 ms cold, so it was reverted)
+    let t_maps = std::time::Instant::now();
+    let (emissive_on, flip_green, max_atlas) = (opts.emissive, opts.flip_normal_green, opts.max_atlas_size);
+    let (metallic_scale, metallic_max) = (opts.metallic_scale, opts.metallic_max);
+    let (diffuse_res, he, hn, hp) = std::thread::scope(|s| {
+        let slot_mat = &slot_mat;
+        let placements = &placements;
+        let textures = &sc.textures;
+        let he = s.spawn(move || {
+            let img = if emissive_on { atlas::build_map(MapKind::Emissive, slot_mat, placements, textures) } else { None };
+            img.map(|i| atlas::shrink_to_fit(i, max_atlas).0)
+        });
+        let hn = s.spawn(move || {
+            atlas::build_map(MapKind::Normal { flip_green }, slot_mat, placements, textures).map(|i| atlas::shrink_to_fit(i, max_atlas).0)
+        });
+        let hp = s.spawn(move || {
+            atlas::build_map(MapKind::Pbr { metallic_scale, metallic_max }, slot_mat, placements, textures).map(|i| atlas::shrink_to_fit(i, max_atlas).0)
+        });
+        let d = atlas::shrink_to_fit(atlas_img, max_atlas);
+        (d, he.join(), hn.join(), hp.join())
+    });
+    let emissive_img = he.map_err(|_| texture_thread_panicked())?;
+    let normal_img = hn.map_err(|_| texture_thread_panicked())?;
+    let pbr_img = hp.map_err(|_| texture_thread_panicked())?;
+    let (diffuse, shrunk) = diffuse_res;
+    ctx.timings.push(("atlas_maps", t_maps.elapsed().as_micros() as u64));
+
+    // messages in the same order as before
     let count = |f: fn(&Material) -> bool| slot_mat.iter().flatten().filter(|m| f(m)).count();
-    let emissive_img = if opts.emissive { atlas::build_map(MapKind::Emissive, &slot_mat, &placements, &sc.textures) } else { None };
     if emissive_img.is_some() {
         ctx.info(DiagCode::EmissiveAtlas, format!("Built matching emissive atlas ({}/{} materials have real emission).", count(atlas::has_emission), swatches.len()));
     }
-    let normal_img = atlas::build_map(MapKind::Normal { flip_green: opts.flip_normal_green }, &slot_mat, &placements, &sc.textures);
     if normal_img.is_some() {
         ctx.info(DiagCode::NormalAtlas, format!("Built matching normal atlas ({}/{} materials have a normal map).", count(atlas::has_normal), swatches.len()));
     }
-    let pbr_img = atlas::build_map(MapKind::Pbr { metallic_scale: opts.metallic_scale, metallic_max: opts.metallic_max }, &slot_mat, &placements, &sc.textures);
     if pbr_img.is_some() {
         ctx.info(DiagCode::PbrAtlas, format!("Built matching pbr atlas ({}/{} materials have roughness data).", count(atlas::has_roughness), swatches.len()));
     }
-
-    let (diffuse, shrunk) = atlas::shrink_to_fit(atlas_img, opts.max_atlas_size);
     if let Some((o, n)) = shrunk {
         ctx.warn(DiagCode::AtlasShrunk, format!("the diffuse atlas came out to {}x{}px, bigger than the {}px limit, so it was shrunk to {}x{}px. Raise the max atlas size if the texture looks too blurry.", o.0, o.1, opts.max_atlas_size, n.0, n.1));
     }
-    let emissive_img = emissive_img.map(|i| atlas::shrink_to_fit(i, opts.max_atlas_size).0);
-    let normal_img = normal_img.map(|i| atlas::shrink_to_fit(i, opts.max_atlas_size).0);
-    let pbr_img = pbr_img.map(|i| atlas::shrink_to_fit(i, opts.max_atlas_size).0);
 
     Ok(AtlasEntry {
         diffuse,
@@ -257,7 +385,7 @@ fn build_atlas(opts: &ConvertOptions, sc: &Scene, parts: &[Part], ctx: &mut Ctx)
         unique_materials,
         red_slot,
         diags: Vec::new(),
-        png: Mutex::new([None, None, None, None]),
+        png: [Mutex::new(None), Mutex::new(None), Mutex::new(None), Mutex::new(None)],
     })
 }
 
@@ -265,8 +393,12 @@ fn build_atlas(opts: &ConvertOptions, sc: &Scene, parts: &[Part], ctx: &mut Ctx)
 fn build_geometry(opts: &ConvertOptions, parts: &[Part], a: &AtlasEntry, ctx: &mut Ctx) -> Result<GeoEntry> {
     ctx.progress(Stage::Geometry, 0.35, "Writing geometry");
     let (placements, real_uv, part_slot) = (&a.placements, &a.real_uv, &a.part_slot);
-    let mut obj = String::new();
-    let mut vt_cache: HashMap<String, usize> = HashMap::new();
+    // Integer keys (the UV rounded to 6 decimals, packed) in a fast hasher instead of a formatted String per face corner; the text is
+    // written by hand. Output is byte-identical to the `format!("{:.6}")` version (see fastfmt tests).
+    let tri_total: usize = parts.iter().map(|p| p.tris.len()).sum();
+    let vert_total: usize = parts.iter().map(|p| p.pos.len()).sum();
+    let mut obj: Vec<u8> = Vec::with_capacity(vert_total * 64 + tri_total * 44 + 1024);
+    let mut vt_cache: HashMap<(u64, u64), usize, FxBuild> = HashMap::with_capacity_and_hasher(tri_total / 2 + 16, FxBuild::default());
     let (mut vt_count, mut vert_offset) = (0usize, 0usize);
     let (mut total_verts, mut total_faces, mut tiled_split, mut tiled_unsplit) = (0usize, 0usize, 0usize, 0usize);
     let mut icon_tris: Vec<IconTri> = Vec::new();
@@ -282,12 +414,14 @@ fn build_geometry(opts: &ConvertOptions, parts: &[Part], a: &AtlasEntry, ctx: &m
         tiled_split += g.split;
         tiled_unsplit += g.unsplit;
 
-        let _ = writeln!(obj, "# part_{i}");
+        obj.extend_from_slice(b"# part_");
+        push_uint(&mut obj, i as u64);
+        obj.push(b'\n');
         for v in &g.verts {
-            let _ = writeln!(obj, "v {:.6} {:.6} {:.6}", v[0], v[1], v[2]);
+            push_line3(&mut obj, b"v ", *v);
         }
         for n in &g.nrms {
-            let _ = writeln!(obj, "vn {:.6} {:.6} {:.6}", n[0], n[1], n[2]);
+            push_line3(&mut obj, b"vn ", *n);
         }
         let y_bottom = pl.atlas_h - pl.y_top - pl.h;
         let (eu, ev) = (0.5 / pl.w.max(1) as f64, 0.5 / pl.h.max(1) as f64);
@@ -305,15 +439,29 @@ fn build_geometry(opts: &ConvertOptions, parts: &[Part], a: &AtlasEntry, ctx: &m
                     }
                 };
                 uv_atlas[k] = [u, v];
-                let key = format!("{u:.6} {v:.6}");
-                vt[k] = *vt_cache.entry(key.clone()).or_insert_with(|| {
-                    let _ = writeln!(obj, "vt {key}");
+                // atlas UVs lie in 0..1; a non-finite value (cannot happen) would be written as 0
+                let key = (fix6(u).unwrap_or(0), fix6(v).unwrap_or(0));
+                vt[k] = *vt_cache.entry(key).or_insert_with(|| {
+                    obj.extend_from_slice(b"vt ");
+                    write_fix6(&mut obj, key.0);
+                    obj.push(b' ');
+                    write_fix6(&mut obj, key.1);
+                    obj.push(b'\n');
                     vt_count += 1;
                     vt_count
                 });
             }
-            let ix = |k: usize| f.idx[k] + 1 + vert_offset;
-            let _ = writeln!(obj, "f {0}/{1}/{0} {2}/{3}/{2} {4}/{5}/{4}", ix(0), vt[0], ix(1), vt[1], ix(2), vt[2]);
+            obj.push(b'f');
+            for k in 0..3 {
+                let a = (f.idx[k] + 1 + vert_offset) as u64;
+                obj.push(b' ');
+                push_uint(&mut obj, a);
+                obj.push(b'/');
+                push_uint(&mut obj, vt[k] as u64);
+                obj.push(b'/');
+                push_uint(&mut obj, a);
+            }
+            obj.push(b'\n');
             if opts.write_icon {
                 icon_tris.push(IconTri { p: [g.verts[f.idx[0]], g.verts[f.idx[1]], g.verts[f.idx[2]]], uv: uv_atlas });
             }
@@ -323,7 +471,9 @@ fn build_geometry(opts: &ConvertOptions, parts: &[Part], a: &AtlasEntry, ctx: &m
         total_faces += g.faces.len();
     }
 
-    Ok(GeoEntry { text: obj, vt_count, vert_offset, total_verts, total_faces, tiled_split, tiled_unsplit, icon_tris })
+    // the buffer only ever holds ASCII
+    let text = String::from_utf8(obj).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
+    Ok(GeoEntry { text, vt_count, vert_offset, total_verts, total_faces, tiled_split, tiled_unsplit, icon_tris })
 }
 
 /// Removes a half-written temp folder unless told to keep it.
@@ -388,20 +538,25 @@ fn swap_into_place(tmp: &Path, target: &Path, out_dir: &Path, name: &str) -> Res
 
 /// Self-check of what was written: the OBJ's material usage and the files the MTL points at. A failure here is a
 /// converter bug, so it is reported as `Internal` instead of handing the game a broken model.
-fn verify_output(dir: &Path, name: &str) -> Result<()> {
+/// `obj` is the text that was just written (checking it in memory avoids reading a 25 MB file back); the file on disk is only
+/// compared by length, which catches a short write.
+fn verify_output(dir: &Path, name: &str, obj: &str) -> Result<()> {
     let bad = |m: String| Err(ConvertError::Internal(format!("output self-check failed: {m}")));
-    let obj = std::fs::read_to_string(dir.join(format!("{name}.obj")))?;
+    let on_disk = std::fs::metadata(dir.join(format!("{name}.obj")))?.len();
+    if on_disk != obj.len() as u64 {
+        return bad(format!("the .obj on disk is {on_disk} bytes, expected {}", obj.len()));
+    }
     let mut mat: Option<&str> = None;
     let mut has_ucx = false;
     for l in obj.lines() {
-        let t: Vec<&str> = l.split_whitespace().collect();
-        match t.first().copied() {
-            Some("usemtl") => match t.get(1) {
+        let mut t = l.split_whitespace();
+        match t.next() {
+            Some("usemtl") => match t.next() {
                 Some(m) => mat = Some(m),
                 None => return bad("bare usemtl".into()),
             },
             Some("f") if mat.is_none() => return bad("face before any usemtl".into()),
-            Some("o") if t.get(1).map(|n| n.starts_with(votv_model_core::UCX_PREFIX)).unwrap_or(false) => has_ucx = true,
+            Some("o") if t.next().map(|n| n.starts_with(votv_model_core::UCX_PREFIX)).unwrap_or(false) => has_ucx = true,
             _ => {}
         }
     }
@@ -435,6 +590,8 @@ pub fn convert(opts: &ConvertOptions, input: &Path) -> Result<Report> {
 pub fn convert_with(opts: &ConvertOptions, input: &Path, hooks: &Hooks) -> Result<Report> {
     opts.validate()?;
     let mut ctx = Ctx::new(hooks);
+    let t_total = std::time::Instant::now();
+    let mut mark = std::time::Instant::now();
 
     let mut input = input.to_path_buf();
     if input.extension().is_none() {
@@ -498,6 +655,7 @@ pub fn convert_with(opts: &ConvertOptions, input: &Path, hooks: &Hooks) -> Resul
         ctx.attention(DiagCode::SkeletonWithoutHumanoid, "this model contains skeleton/bone data, but humanoid mode wasn't used, if this is a humanoid model you might notice T-posing.");
     }
 
+    ctx.lap(&mut mark, "load");
     ctx.progress(Stage::Preparing, 0.10, "Preparing parts");
     let mut parts: Vec<Part> = sc.parts.clone();
     let mut custom: Vec<Part> = sc.collision_parts.clone();
@@ -573,6 +731,37 @@ pub fn convert_with(opts: &ConvertOptions, input: &Path, hooks: &Hooks) -> Resul
     }
     ctx.check_cancel()?;
 
+    ctx.lap(&mut mark, "prepare");
+
+    // ---- collision hulls: start the decomposition now, in the background (the thread stores its result in the cache itself, so a
+    // run that is cancelled or fails later still leaves it behind) ----
+    let mut hull_job: Option<HullSource> = if custom.is_empty() && opts.generate_collision {
+        let high = opts.collision_quality == crate::options::CollisionQuality::High;
+        let hkey = HullKey {
+            scene_id: scene_entry.id,
+            drop_transparent: opts.drop_transparent,
+            quality: high as u8,
+            resolution: if high { opts.vhacd_resolution } else { 0 },
+            max_hulls: if high { opts.max_decomp_hulls } else { 0 },
+        };
+        Some(match cache.as_ref().and_then(|c| c.hulls(&hkey)) {
+            Some(h) => HullSource::Cached(h),
+            None => {
+                let (parts2, opts2, cache2) = (parts.clone(), opts.clone(), cache.clone());
+                HullSource::Running(std::thread::spawn(move || {
+                    let t = std::time::Instant::now();
+                    let raw = collision::generate_raw(&parts2, &opts2);
+                    let h = Arc::new(HullEntry::new(raw, t.elapsed().as_micros() as u64));
+                    if let Some(c) = &cache2 {
+                        c.put_hulls(hkey, h.clone());
+                    }
+                    h
+                }))
+            }
+        })
+    } else {
+        None
+    };
     // ---- atlas (cached) ----
     let akey = AtlasKey {
         scene_id: scene_entry.id,
@@ -617,6 +806,8 @@ pub fn convert_with(opts: &ConvertOptions, input: &Path, hooks: &Hooks) -> Resul
         ((p.x as f64 + 0.5 * p.w as f64) / p.atlas_w as f64, (((p.atlas_h - p.y_top - p.h) as f64) + 0.5 * p.h as f64) / p.atlas_h as f64)
     });
 
+    ctx.lap(&mut mark, "atlas");
+    let mut png_jobs = spawn_png_jobs(&atlas_entry, opts.png_level);
     // ---- model geometry (cached) ----
     let gkey = GeoKey { atlas: akey.clone(), scale_bits: opts.scale.to_bits(), write_icon: opts.write_icon };
     let geo: Arc<GeoEntry> = match cache.as_ref().and_then(|c| c.geometry(&gkey)) {
@@ -642,6 +833,7 @@ pub fn convert_with(opts: &ConvertOptions, input: &Path, hooks: &Hooks) -> Resul
     let (tiled_split, tiled_unsplit) = (geo.tiled_split, geo.tiled_unsplit);
     let icon_tris = &geo.icon_tris;
 
+    ctx.lap(&mut mark, "geometry");
     // ---- collision (the game needs at least one UCX_ object, so there is always one) ----
     ctx.progress(Stage::Collision, 0.60, "Collision");
     let mut blocks: Vec<(String, Mesh)> = Vec::new();
@@ -662,31 +854,20 @@ pub fn convert_with(opts: &ConvertOptions, input: &Path, hooks: &Hooks) -> Resul
             ctx.info(DiagCode::NoCollCustomKept, "(auto-generated collision was turned off, but it only suppresses generated collision, the custom UCX_ mesh(es) found in the source file are still used.)");
         }
     } else if opts.generate_collision {
-        let high = opts.collision_quality == crate::options::CollisionQuality::High;
-        let hkey = HullKey {
-            scene_id: scene_entry.id,
-            drop_transparent: opts.drop_transparent,
-            quality: high as u8,
-            resolution: if high { opts.vhacd_resolution } else { 0 },
-            max_hulls: if high { opts.max_decomp_hulls } else { 0 },
-        };
-        let hull_entry: Arc<HullEntry> = match cache.as_ref().and_then(|c| c.hulls(&hkey)) {
-            Some(h) => {
+        let hull_entry: Arc<HullEntry> = match hull_job.take() {
+            Some(HullSource::Cached(h)) => {
                 ctx.cache_hits.push("collision");
                 h
             }
-            None => {
-                // stored right away, so a run that is cancelled just after this step still leaves its result behind
-                let h = Arc::new(HullEntry { raw: collision::generate_raw(&parts, opts) });
-                if let Some(c) = &cache {
-                    c.put_hulls(hkey, h.clone());
-                }
+            Some(HullSource::Running(job)) => {
+                let h = job.join().unwrap_or_else(|_| Arc::new(HullEntry::new(Err("the convex decomposition thread panicked".to_string()), 0)));
+                ctx.timings.push(("vhacd_generate", h.generate_micros));
                 h
             }
+            None => Arc::new(HullEntry::new(Err("internal error: the collision job was not started".to_string()), 0)),
         };
-        match &hull_entry.raw {
-            Ok(raw) => {
-                let g = collision::trim(raw, opts.hull_face_cap());
+        match hull_entry.trimmed(opts.hull_face_cap()) {
+            Some(g) => {
                 if let Some(e) = &g.decomposition_error {
                     ctx.warn(DiagCode::DecompositionFailed, format!("convex decomposition failed on this model's geometry ({e}). Falling back to a single convex hull ('low' quality) for this print instead."));
                 } else if opts.collision_quality == crate::options::CollisionQuality::High {
@@ -704,7 +885,8 @@ pub fn convert_with(opts: &ConvertOptions, input: &Path, hooks: &Hooks) -> Resul
                 let (v, f): (usize, usize) = blocks.iter().fold((0, 0), |a, b| (a.0 + b.1.verts.len(), a.1 + b.1.faces.len()));
                 ctx.info(DiagCode::CollisionAdded, format!("Added {} UCX_ collision hull(s): {v} verts, {f} faces total.", blocks.len()));
             }
-            Err(e) => {
+            None => {
+                let e = hull_entry.raw.as_ref().err().map(String::as_str).unwrap_or("unknown error");
                 ctx.warn(DiagCode::CollisionFailed, format!("could not generate a collision shape for this model ({e}). Adding a fallback box collision at the base instead so it doesn't fall through the floor in-game."));
             }
         }
@@ -781,6 +963,7 @@ pub fn convert_with(opts: &ConvertOptions, input: &Path, hooks: &Hooks) -> Resul
     stats.hulls = blocks.len();
     ctx.check_cancel()?;
 
+    ctx.lap(&mut mark, "collision");
     // ---- write into a hidden temp folder, then swap it in ----
     ctx.progress(Stage::Writing, 0.90, "Writing files");
     std::fs::create_dir_all(&out_dir).map_err(|e| perm_or_io(e, &out_dir))?;
@@ -794,11 +977,11 @@ pub fn convert_with(opts: &ConvertOptions, input: &Path, hooks: &Hooks) -> Resul
     let emissive_name = emissive_img.as_ref().map(|_| tex(TextureKind::Emissive));
     let normal_name = normal_img.as_ref().map(|_| tex(TextureKind::Normal));
     let pbr_name = pbr_img.as_ref().map(|_| tex(TextureKind::Pbr));
-    write_png_bytes(&tmp_path.join(&diffuse_name), &atlas_entry.png_bytes(0, false)?)?;
-    if let Some(n) = &emissive_name { write_png_bytes(&tmp_path.join(n), &atlas_entry.png_bytes(1, false)?)?; }
-    if let Some(n) = &normal_name { write_png_bytes(&tmp_path.join(n), &atlas_entry.png_bytes(2, true)?)?; }
-    if let Some(n) = &pbr_name { write_png_bytes(&tmp_path.join(n), &atlas_entry.png_bytes(3, true)?)?; }
-
+    write_png_bytes(&tmp_path.join(&diffuse_name), &png_jobs.take(0)?)?;
+    if let Some(n) = &emissive_name { write_png_bytes(&tmp_path.join(n), &png_jobs.take(1)?)?; }
+    if let Some(n) = &normal_name { write_png_bytes(&tmp_path.join(n), &png_jobs.take(2)?)?; }
+    if let Some(n) = &pbr_name { write_png_bytes(&tmp_path.join(n), &png_jobs.take(3)?)?; }
+    ctx.lap(&mut mark, "png");
     let write = |file: String, text: &str| -> Result<()> {
         std::fs::write(tmp_path.join(&file), text).map_err(|e| perm_or_io(e, &tmp_path))
     };
@@ -848,12 +1031,14 @@ pub fn convert_with(opts: &ConvertOptions, input: &Path, hooks: &Hooks) -> Resul
         ctx.info(DiagCode::SidecarWritten, "Wrote votv_convert.json (source path, options, converter version).");
     }
 
+    ctx.lap(&mut mark, "files");
     // the .obj goes in last: a folder scan that does not skip hidden folders only lists folders with an .obj
     write(format!("{name}.obj"), &obj)?;
-    verify_output(&tmp_path, &name)?;
+    verify_output(&tmp_path, &name, &obj)?;
     ctx.check_cancel()?;
     swap_into_place(&tmp_path, &model_dir, &out_dir, &name)?;
     tmp.keep = true;
+    ctx.lap(&mut mark, "obj_verify_swap");
 
     if tiled_split > 0 {
         ctx.info(DiagCode::TiledSplit, format!("Tiled textures: {tiled_split} faces were cut along texture-repeat lines to keep tiling intact."));
@@ -904,5 +1089,7 @@ pub fn convert_with(opts: &ConvertOptions, input: &Path, hooks: &Hooks) -> Resul
 
     ctx.progress(Stage::Done, 1.0, "Done");
     let cache_hits: Vec<String> = ctx.cache_hits.iter().map(|h| h.to_string()).collect();
-    Ok(Report { model_dir, name, files, stats, diagnostics: ctx.diags, properties_kept, extras, cache_hits })
+    let mut timings: Vec<StageTiming> = ctx.timings.iter().map(|(n, us)| StageTiming { stage: n.to_string(), micros: *us }).collect();
+    timings.push(StageTiming { stage: "total".to_string(), micros: t_total.elapsed().as_micros() as u64 });
+    Ok(Report { model_dir, name, files, stats, diagnostics: ctx.diags, properties_kept, extras, cache_hits, timings })
 }

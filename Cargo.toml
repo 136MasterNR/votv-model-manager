@@ -23,6 +23,13 @@ rfd = "0.15"   # native folder picker (Windows: no extra dependencies)
 serde_json = "1"   # reads votv_convert.json (the options a model was converted with) for the Edit button
 votv-convert = { path = "converter/crates/votv-convert" }
 zip = { version = "9.0.5", default-features = false, features = ["deflate"] }   # export / import of .zip (src/export.rs, src/import.rs); no C codecs. 9.0.5 fixes the dual-header (Zip Cloaking) advisory
+# Import of .7z and .rar (src/import.rs). Both only READ: the importer writes every file itself, after checking its path.
+# sevenz-rust2: pure Rust, decoding only (LZMA / LZMA2 / BZip2 / PPMd / Deflate, no passwords). >= 0.21.1 is required: older
+# versions have a path-traversal bug (CVE-2026-61725) in their `decompress*` helpers, which we do not use either. Needs Rust 1.93.
+sevenz-rust2 = { version = "0.24.1", default-features = false, features = ["bzip2", "ppmd", "deflate"] }
+# unrar: rarlab's UnRAR C++ source (7.1), compiled by build.rs with the C++ compiler that Rust on Windows already needs.
+# Its licence (see THIRD-PARTY-NOTICES.md) allows use in any software that only unpacks RAR files.
+unrar = "0.5.8"
 
 [profile.dev]
 opt-level = 1

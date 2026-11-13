@@ -275,6 +275,36 @@ pub fn scan_models(root: &Path) -> Vec<Entry> {
 
 // ---- reference implementation and equivalence tests (test builds only) ----
 
+/// Detect a pbr map that is packed as ORM (R occlusion, G roughness, B metallic) instead of VotV's own packing
+/// (R metallic, G specular, B roughness). The converter writes the specular as the constant 128, so a map whose non-empty
+/// texels do not have G near 128 does not come from the converter, but that does NOT make it ORM: the game's maps are
+/// authored by hand and have a specular that varies.
+///
+/// OFF (2026-11-10, green). The detection read the crystal lamp as ORM, which made its crystal rough (G, the varying
+/// specular, taken as roughness 0.74) and barely metallic (B, the roughness 0.24, taken as metallic): every reflection on
+/// the crystal was gone. The game's own `icon.png` of that lamp shows it is VotV's packing: the crystal (metal 0.74 in R)
+/// is brighter than its diffuse alone would be for ANY metallic value that fits the pad next to it (observed linear red
+/// 0.294, diffuse only 0.129), and the extra light has exactly the crystal's own colour ratio (1 : 0.055 : 0.133 against
+/// the albedo's 1 : 0.053 : 0.127): the tinted specular of a metal. Read as ORM (metallic 0.24) the crystal would be
+/// DARKER than observed (0.376 predicted, 0.294 seen), which no specular can explain. The matte vines and pad that made
+/// the detection look right are matte because their map is (0, 0, 0): no specular. `pbr_texel` handles that per texel.
+/// Kept for a model that really is ORM; flip this to true to use it. Input: RGBA bytes as decoded (before the shuffle).
+pub const PBR_ORM_AUTODETECT: bool = false;
+
+pub fn pbr_is_orm(rgba: &[u8]) -> bool {
+    let (mut used, mut spec_like) = (0u64, 0u64);
+    for px in rgba.chunks_exact(4).step_by(5) {
+        if px[1] == 0 {
+            continue; // unused atlas area
+        }
+        used += 1;
+        if px[1].abs_diff(128) <= 2 {
+            spec_like += 1;
+        }
+    }
+    used > 64 && spec_like * 100 < used * 95
+}
+
 /// The pre-H1 `entry_times`, verbatim: part of the reference below, and no longer used by the program.
 #[cfg(test)]
 fn entry_times(dir: &Path) -> (std::time::SystemTime, std::time::SystemTime) {
@@ -618,6 +648,7 @@ mod scan_equivalence_tests {
 /// of `scan_models` instead of calling its helpers (another change may remove or rename them); the unit tests below keep
 /// the two in step.
 pub fn has_any_model(root: &Path) -> bool {
+    let _bench = crate::benchmark::work("startup.has_any_model");
     let Ok(rd) = fs::read_dir(root) else {
         return false;
     };
@@ -781,6 +812,8 @@ mod has_any_model_tests {
 // ---------------------------------------------------------------------------------------------
 
 pub fn load_model(dir: &Path) -> Result<ModelData, String> {
+    let mut _bench = crate::benchmark::work("model.load_model");
+    _bench.detail_with(|| dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
     let dir = dir
         .canonicalize()
         .map_err(|e| format!("cannot open {}: {e}", dir.display()))?;
@@ -817,7 +850,15 @@ pub fn load_model(dir: &Path) -> Result<ModelData, String> {
         })
         .ok_or("no .obj file in the folder")?;
 
-    let (models, mats) = load_obj_robust(&obj, &files)?;
+    let (models, mats) = {
+        let mut b = crate::benchmark::work("model.parse_obj_mtl");
+        b.detail_with(|| {
+            let sz = |p: &Path| fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+            format!("obj_bytes={}", sz(&obj))
+        });
+        load_obj_robust(&obj, &files)?
+    };
+    let _post = crate::benchmark::work("model.build_sections");
 
     let mut sections = Vec::new();
     let mut hulls = Vec::new();
@@ -1330,6 +1371,37 @@ pub struct PoolImg {
     pub filter: u8,
 }
 
+/// `<kind>_<folder name>.png` files that exist in `dir`: the textures a model most often uses, known before its OBJ
+/// is parsed. The lookup mirrors `load_model` (canonical folder, lower-case names) so the paths are the same ones
+/// `find_tex` returns later.
+fn early_candidates(dir: &Path, kinds: &[Kind]) -> Vec<(PathBuf, Kind)> {
+    let Ok(dir) = dir.canonicalize() else {
+        return Vec::new();
+    };
+    let Some(name) = dir.file_name().and_then(|s| s.to_str()).map(|s| s.to_lowercase()) else {
+        return Vec::new();
+    };
+    let Ok(read) = fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let files: HashMap<String, PathBuf> = read
+        .filter_map(|e| e.ok())
+        .filter_map(|e| {
+            let p = e.path();
+            let n = p.file_name()?.to_str()?.to_lowercase();
+            Some((n, p))
+        })
+        .collect();
+    kinds
+        .iter()
+        .filter_map(|&k| {
+            files
+                .get(&format!("{}_{}.png", k.name(), name).to_lowercase())
+                .map(|p| (p.clone(), k))
+        })
+        .collect()
+}
+
 /// A model plus its decoded textures. `tex[section][kind.idx()]` indexes into `pool`.
 pub struct Loaded {
     pub data: ModelData,
@@ -1338,12 +1410,40 @@ pub struct Loaded {
     pub dup_removed: usize, // triangles dropped by the converter's duplicate rule
 }
 
+/// A pbr texel counts as matte (no specular) below this specular value (of 255).
+pub const MATTE_SPECULAR: u8 = 8;
+
+/// One texel of the game's pbr map (R metallic, G specular, B roughness) the way Bevy wants it (R specular, G roughness,
+/// B metallic). Bevy has ONE `reflectance` per material, the game has a specular value per TEXEL. The crystal lamp's map is
+/// (0, 0, 0) on the vines and the pad (matte in the game, also in its own icon) and about (0.74, 0.74, 0.24) on the
+/// crystal, so a material-wide reflectance made the vines and the pad, whose roughness is 0 in the map, shine like wet
+/// glass. A texel without specular that is not metal now gets roughness 1 (no visible highlight whatever the material's
+/// reflectance); the map's own roughness fades back in as the specular rises to 0.25. Metals keep their roughness:
+/// Specular does not apply to them, and the crystal (metal 0.74) must keep its reflections.
+pub fn pbr_texel(metal: u8, spec: u8, rough: u8) -> [u8; 3] {
+    let t = (spec as f32 / 255.0 / 0.25).clamp(0.0, 1.0);
+    let keep = (t * t * (3.0 - 2.0 * t)).max(metal as f32 / 255.0);
+    let rough_out = rough as f32 + (255.0 - rough as f32) * (1.0 - keep);
+    [spec, rough_out.round() as u8, metal]
+}
+
 fn decode(path: &Path, kind: Kind, max_side: Option<u32>) -> Option<RawImage> {
-    let mut img = image::open(path).ok()?.to_rgba8();
+    let mut _bench = crate::benchmark::work("tex.decode_total");
+    let mut img = {
+        let mut b = crate::benchmark::work("tex.open_and_decode");
+        b.detail_with(|| {
+            let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+            format!("{} file_bytes={bytes}", path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default())
+        });
+        image::open(path).ok()?.to_rgba8()
+    };
+    let src_dims = img.dimensions();
+    _bench.detail_with(|| format!("{} {}x{} max_side={max_side:?}", kind.name(), src_dims.0, src_dims.1));
     if let Some(m) = max_side {
         let (w, h) = img.dimensions();
         let longest = w.max(h);
         if longest > m {
+            let _t = crate::benchmark::work("tex.downscale");
             let s = m as f32 / longest as f32;
             let (nw, nh) = (
                 ((w as f32 * s).round() as u32).max(1),
@@ -1355,14 +1455,24 @@ fn decode(path: &Path, kind: Kind, max_side: Option<u32>) -> Option<RawImage> {
     let (w, h) = img.dimensions();
     let mut data = img.into_raw();
     if kind == Kind::Pbr {
-        // VotV: R metallic, G specular, B roughness. Bevy wants G roughness, B metallic. Bevy ignores R, so the game's
-        // specular goes there (scene.rs averages it into the material's `reflectance`).
-        for px in data.chunks_exact_mut(4) {
-            let (metal, spec, rough) = (px[0], px[1], px[2]);
-            px[0] = spec;
-            px[1] = rough;
-            px[2] = metal;
-            px[3] = 255;
+        let _t = crate::benchmark::work("tex.pbr_swizzle");
+        // VotV (the converter's packing): R metallic, G specular, B roughness. Bevy wants G roughness, B metallic. Bevy
+        // ignores R, so the game's specular goes there (scene.rs averages it into the material's `reflectance`).
+        // A map that is NOT in that packing (see `pbr_is_orm`) is already in glTF / Unreal ORM order (R occlusion,
+        // G roughness, B metallic): it is used as it is, with the default specular 0.5 in R.
+        if PBR_ORM_AUTODETECT && pbr_is_orm(&data) {
+            for px in data.chunks_exact_mut(4) {
+                px[0] = 128;
+                px[3] = 255;
+            }
+        } else {
+            for px in data.chunks_exact_mut(4) {
+                let [r, g, b] = pbr_texel(px[0], px[1], px[2]);
+                px[0] = r;
+                px[1] = g;
+                px[2] = b;
+                px[3] = 255;
+            }
         }
     }
     Some(RawImage { w, h, data })
@@ -1375,7 +1485,64 @@ pub fn load_with_textures(
     kinds: &[Kind],
     max_side: Option<u32>,
 ) -> Result<Loaded, String> {
+    let mut _bench = crate::benchmark::work("model.load_with_textures");
+    _bench.detail_with(|| {
+        let n = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        format!("{n} kinds={} max_side={max_side:?}", kinds.len())
+    });
+    // The textures named after the folder are the usual ones: start decoding them now, in parallel, while the OBJ is
+    // parsed (parsing and decoding took about 55 ms and 60 ms one after the other on a typical single-material model).
+    let mut early: HashMap<(PathBuf, Kind), std::thread::JoinHandle<Option<RawImage>>> = HashMap::new();
+    for (p, k) in early_candidates(dir, kinds) {
+        let key = (p.clone(), k);
+        early.insert(key, std::thread::spawn(move || decode(&p, k, max_side)));
+    }
     let mut data = load_model(dir)?;
+
+    // What the sections actually use, each file once, in the order the sections ask for it.
+    let mut wanted: Vec<(PathBuf, Kind)> = Vec::new();
+    {
+        let mut asked: HashSet<(PathBuf, Kind)> = HashSet::new();
+        for s in &data.sections {
+            for &k in kinds {
+                if let Some(p) = data.find_tex(k, s) {
+                    let key = (p, k);
+                    if asked.insert(key.clone()) {
+                        wanted.push(key);
+                    }
+                }
+            }
+        }
+    }
+    let mut decoded: HashMap<(PathBuf, Kind), Option<RawImage>> = HashMap::new();
+    {
+        let _wait = crate::benchmark::work("model.texture_wait");
+        // Files the early guess did not cover are decoded now, a few at a time in parallel.
+        let todo: Vec<(PathBuf, Kind)> = wanted.iter().filter(|k| !early.contains_key(*k)).cloned().collect();
+        let width = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2).clamp(1, 6);
+        for chunk in todo.chunks(width) {
+            if let [only] = chunk {
+                decoded.insert(only.clone(), decode(&only.0, only.1, max_side));
+                continue;
+            }
+            let results: Vec<((PathBuf, Kind), Option<RawImage>)> = std::thread::scope(|sc| {
+                let handles: Vec<_> = chunk
+                    .iter()
+                    .map(|key| sc.spawn(move || (key.clone(), decode(&key.0, key.1, max_side))))
+                    .collect();
+                handles.into_iter().filter_map(|h| h.join().ok()).collect()
+            });
+            decoded.extend(results);
+        }
+        // Then the early ones (most are finished by now).
+        for key in &wanted {
+            if let Some(h) = early.remove(key) {
+                decoded.insert(key.clone(), h.join().unwrap_or(None));
+            }
+        }
+        crate::benchmark::count("tex.early_decode_unused", early.len() as u64); // guessed by name, but no section used it
+    }
+
     let mut pool: Vec<PoolImg> = Vec::new();
     let mut seen: HashMap<(PathBuf, Kind), usize> = HashMap::new();
     let mut tex = Vec::new();
@@ -1385,10 +1552,10 @@ pub fn load_with_textures(
             let Some(p) = data.find_tex(k, s) else {
                 continue;
             };
-            let key = (p.clone(), k);
+            let key = (p, k);
             let idx = if let Some(&i) = seen.get(&key) {
                 Some(i)
-            } else if let Some(img) = decode(&p, k, max_side) {
+            } else if let Some(img) = decoded.remove(&key).flatten() {
                 pool.push(PoolImg {
                     img,
                     kind: k,
@@ -1409,6 +1576,14 @@ pub fn load_with_textures(
         .map(|t| t[Kind::Diffuse.idx()].is_some())
         .collect();
     let dup_removed = mark_duplicate_faces(&mut data, &has_tex);
+    if crate::benchmark::enabled() {
+        let tris: usize = data.sections.iter().map(|s| s.indices.len() / 3).sum();
+        let verts: usize = data.sections.iter().map(|s| s.positions.len()).sum();
+        let bytes: usize = pool.iter().map(|p| p.img.data.len()).sum();
+        crate::benchmark::note("model.triangles", tris as f64, || format!("{} sections", data.sections.len()));
+        crate::benchmark::note("model.vertices", verts as f64, String::new);
+        crate::benchmark::note("model.texture_bytes_decoded", bytes as f64, || format!("{} images", pool.len()));
+    }
     Ok(Loaded {
         data,
         tex,
@@ -1425,6 +1600,12 @@ pub fn load_with_textures(
 /// without a texture is dropped. Copies inside one section, and reversed-winding copies, are left alone.
 /// Fills `RawSection::dedup` and returns how many triangles were dropped.
 pub fn mark_duplicate_faces(data: &mut ModelData, has_tex: &[bool]) -> usize {
+    // A triangle is only dropped when ANOTHER section holds the same one, so one section can never lose anything.
+    // (Measured: this pass cost 33 ms on a 87k-triangle single-section model and 292 ms on a 575k one.)
+    if data.sections.len() < 2 {
+        return 0;
+    }
+    let _bench = crate::benchmark::work("model.mark_duplicate_faces");
     let q = |p: [f32; 3]| {
         [
             (p[0] * 1.0e4).round() as i64,
@@ -1650,3 +1831,154 @@ mod obj_parser_tests {
         assert!(models[0].mesh.texcoords.is_empty() && models[0].mesh.normals.is_empty());
     }
 }
+
+#[cfg(test)]
+mod load_with_textures_tests {
+    use super::*;
+
+    /// A temp folder named `name` with an OBJ and the given PNG files (name, side in pixels).
+    fn model_dir(tag: &str, name: &str, obj: &str, pngs: &[(&str, u32)]) -> PathBuf {
+        let dir = std::env::temp_dir()
+            .join(format!("votv-test-{}-{tag}", std::process::id()))
+            .join(name);
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(format!("{name}.obj")), obj).unwrap();
+        for (file, side) in pngs {
+            image::RgbaImage::new(*side, *side).save(dir.join(file)).unwrap();
+        }
+        dir
+    }
+
+    const TRI: &str = "o A\nv 0 0 0\nv 1 0 0\nv 0 1 0\nvt 0 0\nvt 1 0\nvt 0 1\nvn 0 0 1\nusemtl m\nf 1/1/1 2/2/1 3/3/1\n";
+
+    #[test]
+    fn textures_named_after_the_folder_are_found_early_and_land_in_the_right_slots() {
+        let dir = model_dir(
+            "early",
+            "testmodel",
+            TRI,
+            &[("diffuse_testmodel.png", 8), ("pbr_testmodel.png", 4)],
+        );
+        let l = load_with_textures(&dir, &KINDS, None).unwrap();
+        assert_eq!(l.pool.len(), 2);
+        let d = l.tex[0][Kind::Diffuse.idx()].unwrap();
+        let p = l.tex[0][Kind::Pbr.idx()].unwrap();
+        assert!(l.pool[d].img.w == 8 && l.pool[d].kind == Kind::Diffuse);
+        assert!(l.pool[p].img.w == 4 && l.pool[p].kind == Kind::Pbr);
+        assert!(l.tex[0][Kind::Normal.idx()].is_none() && l.tex[0][Kind::Emissive.idx()].is_none());
+    }
+
+    #[test]
+    fn material_textures_are_decoded_after_the_parse_and_a_shared_file_is_decoded_once() {
+        let obj = "o A\nv 0 0 0\nv 1 0 0\nv 0 1 0\nvt 0 0\nvt 1 0\nvt 0 1\nvn 0 0 1\nusemtl red\nf 1/1/1 2/2/1 3/3/1\n\
+                   o B\nv 0 0 1\nv 1 0 1\nv 0 1 1\nusemtl red\nf 4/1/1 5/2/1 6/3/1\n";
+        let dir = model_dir("mat", "matmodel", obj, &[("diffuse_red.png", 8)]);
+        let l = load_with_textures(&dir, &KINDS, None).unwrap();
+        assert_eq!(l.pool.len(), 1, "both sections use diffuse_red.png: one pooled image");
+        assert_eq!(l.tex[0][Kind::Diffuse.idx()], Some(0));
+        assert_eq!(l.tex[1][Kind::Diffuse.idx()], Some(0));
+    }
+
+    #[test]
+    fn a_missing_texture_leaves_the_slot_empty() {
+        let dir = model_dir("none", "plainmodel", TRI, &[]);
+        let l = load_with_textures(&dir, &KINDS, None).unwrap();
+        assert!(l.pool.is_empty());
+        assert!(l.tex[0].iter().all(|s| s.is_none()));
+    }
+
+    #[test]
+    fn one_section_never_drops_triangles_and_two_identical_sections_keep_the_textured_one() {
+        let dir = model_dir("dup1", "dupone", TRI, &[]);
+        let mut data = load_model(&dir).unwrap();
+        assert_eq!(mark_duplicate_faces(&mut data, &[false]), 0);
+        assert!(data.sections[0].dedup.is_none());
+
+        let two = "o A\nv 0 0 0\nv 1 0 0\nv 0 1 0\nvt 0 0\nvt 1 0\nvt 0 1\nvn 0 0 1\nusemtl a\nf 1/1/1 2/2/1 3/3/1\n\
+                   o B\nusemtl b\nf 1/1/1 2/2/1 3/3/1\n";
+        let dir = model_dir("dup2", "duptwo", two, &[("diffuse_b.png", 4)]);
+        let l = load_with_textures(&dir, &KINDS, None).unwrap();
+        assert_eq!(l.data.sections.len(), 2);
+        assert_eq!(l.dup_removed, 1, "the copy in the untextured section goes");
+        assert_eq!(l.data.sections[0].dedup.as_ref().map(|v| v.len()), Some(0));
+        assert!(l.data.sections[1].dedup.is_none());
+    }
+}
+
+#[cfg(test)]
+mod pbr_orm_tests {
+    use super::pbr_is_orm;
+
+    fn map(g: impl Fn(usize) -> u8) -> Vec<u8> {
+        (0..400).flat_map(|i| [200, g(i), 60, 255]).collect()
+    }
+
+    #[test]
+    fn converter_packing_has_a_constant_g() {
+        assert!(!pbr_is_orm(&map(|_| 128)));
+    }
+
+    #[test]
+    fn a_varying_g_is_orm() {
+        assert!(pbr_is_orm(&map(|i| 200 + (i % 50) as u8)));
+    }
+
+    #[test]
+    fn empty_atlas_and_tiny_maps_are_not_orm() {
+        assert!(!pbr_is_orm(&map(|_| 0)));
+        assert!(!pbr_is_orm(&[1, 200, 3, 255]));
+    }
+}
+
+#[cfg(test)]
+mod pbr_texel_tests {
+    use super::*;
+
+    #[test]
+    fn a_matte_texel_gets_roughness_one() {
+        // the crystal lamp's vines and pad: metal 0, specular 0, roughness 0 -> (R spec, G rough, B metal)
+        assert_eq!(pbr_texel(0, 0, 0), [0, 255, 0]);
+    }
+
+    #[test]
+    fn a_metal_keeps_its_roughness_even_without_specular() {
+        assert_eq!(pbr_texel(255, 0, 10), [0, 10, 255]);
+    }
+
+    #[test]
+    fn the_lamps_crystal_texel_is_unchanged() {
+        // about (0.74, 0.74, 0.24) of 255: metal 190, specular 190, roughness 60
+        assert_eq!(pbr_texel(190, 190, 60), [190, 60, 190]);
+    }
+
+    #[test]
+    fn a_glossy_non_metal_keeps_its_roughness() {
+        assert_eq!(pbr_texel(0, 128, 60), [128, 60, 0]);
+    }
+
+    #[test]
+    fn roughness_fades_in_smoothly_with_specular() {
+        let mut last = 255u8;
+        for spec in 0..=255u8 {
+            let r = pbr_texel(0, spec, 0)[1];
+            assert!(r <= last, "roughness must not rise with specular (spec {spec}: {r} > {last})");
+            last = r;
+        }
+        assert_eq!(last, 0, "full specular uses the map's own roughness");
+        let mid = pbr_texel(0, 32, 0)[1]; // spec 0.125 = half way up the fade
+        assert!((120..=135).contains(&mid), "{mid}");
+    }
+
+    #[test]
+    fn the_crystal_lamp_is_not_detected_as_orm() {
+        // crystal texels: G (the specular) varies 0.36..1.0 and is nowhere near the converter's constant 128, so the
+        // detector WOULD say ORM: that is why `PBR_ORM_AUTODETECT` is off.
+        let map: Vec<u8> = (0..400)
+            .flat_map(|i| [190u8, 92 + (i % 164) as u8, 60, 255])
+            .collect();
+        assert!(pbr_is_orm(&map));
+        assert!(!PBR_ORM_AUTODETECT);
+    }
+}
+

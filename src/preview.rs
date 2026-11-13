@@ -9,8 +9,9 @@ use bevy::{
     core_pipeline::tonemapping::Tonemapping,
     prelude::*,
     render::{
+        camera::Exposure,
         render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages},
-        view::RenderLayers,
+        view::{ColorGrading, RenderLayers},
     },
     window::RequestRedraw,
 };
@@ -30,6 +31,12 @@ const STUDIO_CLEAR: Color = Color::srgb(0.07, 0.08, 0.09);
 pub struct PreviewCamera;
 #[derive(Component)]
 pub struct StudioLight;
+/// A faint light that always shines along the camera's view direction (the world look only): the game is lit by the
+/// player's flashlight, so a smooth surface facing the viewer shows a white glint (the crystal lamp's front face). It is
+/// weak (`gamerig::HEADLIGHT_INTENSITY`): a smooth surface turns even a weak light into a bright, small highlight, and
+/// a rough one barely changes.
+#[derive(Component)]
+pub struct HeadLight;
 #[derive(Component)]
 pub struct ThumbLight {
     pub front: bool,
@@ -71,6 +78,8 @@ pub struct PreviewState {
     pub checker: Handle<Image>,
     pub scene_gen: u64,   // bumped whenever a new model is shown
     pub last_radius: f32, // radius (m) of the model on stage; lets a regenerated model keep the camera framing
+    /// The load in flight replaces the model on stage after a properties save: keep the camera where it is.
+    pub keep_camera: bool,
 }
 
 /// Puts the preview camera back to the view a freshly loaded model gets: the studio view, or the game's icon camera
@@ -131,9 +140,14 @@ pub fn spawn_stage(commands: &mut Commands, images: &mut Assets<Image>) -> Previ
             ..default()
         }),
         AmbientLight {
-            brightness: crate::gamerig::AMBIENT_BRIGHTNESS,
+            brightness: crate::gamerig::WORLD_AMBIENT_BRIGHTNESS,
             ..default()
-        }, // per camera; the global brightness of the scene, the same in every look (gamerig::AMBIENT_FRACTION)
+        }, // per camera; the world look's ambient (the default look), see `thumb_rig_system`
+        WORLD_TONEMAP, // the world look's film curve
+        Exposure {
+            ev100: Exposure::EV100_BLENDER + WORLD_EV_OFFSET,
+        },
+        world_grading(true),
         Transform::from_xyz(0.0, 0.0, 1.0),
         layer.clone(),
     ));
@@ -166,6 +180,18 @@ pub fn spawn_stage(commands: &mut Commands, images: &mut Assets<Image>) -> Previ
         ));
     }
 
+    commands.spawn((
+        HeadLight,
+        DirectionalLight {
+            illuminance: gamerig::headlight_lux(),
+            shadows_enabled: false,
+            ..default()
+        },
+        Transform::default(),
+        Visibility::Hidden,
+        layer.clone(),
+    ));
+
     PreviewState {
         target,
         target_size: (640, 480),
@@ -178,6 +204,7 @@ pub fn spawn_stage(commands: &mut Commands, images: &mut Assets<Image>) -> Previ
         checker: images.add(checker_image()),
         scene_gen: 0,
         last_radius: 0.0,
+        keep_camera: false,
     }
 }
 
@@ -217,6 +244,7 @@ pub fn orbit_apply(
     nodes: Query<&ComputedNode>,
     mut cam: Query<&mut Transform, With<PreviewCamera>>,
 ) {
+    let _bench = crate::benchmark::sys("sys.preview.orbit_apply");
     if !o.is_changed() && !layout.is_changed() && !ps.is_changed() && !opts.is_changed() {
         return;
     }
@@ -246,19 +274,28 @@ pub fn preview_request(
     mut commands: Commands,
     lib: Res<Library>,
     layout: Res<Layout>,
+    conv: Res<crate::converter::ConvertState>,
     mut ps: ResMut<PreviewState>,
-    mut last: Local<(Option<usize>, bool)>,
+    mut last: Local<(Option<usize>, bool, u64)>,
 ) {
-    let now = (lib.selected, layout.converter);
+    let _bench = crate::benchmark::sys("sys.preview.preview_request");
+    // Properties-only mode (propsedit.rs) keeps the list's preview on stage; only the converter editor clears it.
+    let editor = layout.converter && conv.props.is_none();
+    let now = (lib.selected, editor, conv.props_gen);
     if *last == now {
         return;
     }
+    // After a properties save: the same model again, replaced in place (no flash) with the camera kept.
+    let reload = last.0 == now.0 && last.1 == now.1 && last.2 != now.2 && ps.scene.is_some();
     *last = now;
-    if let Some(old) = ps.scene.take() {
-        commands.entity(old.built.root).despawn();
+    if !reload {
+        if let Some(old) = ps.scene.take() {
+            commands.entity(old.built.root).despawn();
+        }
     }
     ps.rx = None; // cancels any load still running
-    if layout.converter {
+    ps.keep_camera = reload;
+    if editor {
         ps.loading = false;
         ps.header.clear();
         ps.hint = "Converting...".into();
@@ -272,14 +309,20 @@ pub fn preview_request(
         }
         Some(i) => {
             let (dir, name) = (lib.entries[i].dir.clone(), lib.entries[i].name.clone());
+            crate::benchmark::mark_cancel("preview.click_to_shown", ps.gen); // an earlier request that never finished
             ps.gen += 1;
+            crate::benchmark::mark_start("preview.click_to_shown", ps.gen);
+            crate::benchmark::event("preview.request", || name.clone());
             ps.loading = true;
-            ps.header = format!("Loading {name}...");
-            ps.hint = ps.header.clone();
+            if !reload {
+                ps.header = format!("Loading {name}...");
+                ps.hint = ps.header.clone();
+            }
             let gen = ps.gen;
             let (tx, rx) = channel();
             ps.rx = Some(Mutex::new(rx));
             std::thread::spawn(move || {
+                let _bench = crate::benchmark::work("preview.load_thread");
                 let r = load_with_textures(&dir, &KINDS, None);
                 let _ = tx.send((gen, r));
             });
@@ -298,6 +341,7 @@ pub fn preview_receive(
     mut orbit: ResMut<Orbit>,
     mut redraw: EventWriter<RequestRedraw>,
 ) {
+    let _bench = crate::benchmark::sys("sys.preview.preview_receive");
     if !ps.loading {
         return;
     }
@@ -311,6 +355,7 @@ pub fn preview_receive(
     };
     let Some((gen, res)) = msg else { return };
     if gen != ps.gen {
+        crate::benchmark::count("preview.stale_result_dropped", 1);
         return;
     }
     ps.loading = false;
@@ -322,6 +367,7 @@ pub fn preview_receive(
             ps.header = ps.hint.clone();
         }
         Ok(loaded) => {
+            let keep_camera = std::mem::take(&mut ps.keep_camera); // true after a properties save (same model, same view)
             show_loaded(
                 &mut commands,
                 &mut meshes,
@@ -331,8 +377,9 @@ pub fn preview_receive(
                 &opts,
                 &mut orbit,
                 loaded,
-                false,
+                keep_camera,
             );
+            crate::benchmark::mark_end("preview.click_to_shown", gen, || ps.header.clone());
         }
     }
 }
@@ -353,6 +400,8 @@ pub fn show_loaded(
     loaded: Loaded,
     keep_camera: bool,
 ) {
+    let mut _bench = crate::benchmark::work("preview.show_loaded");
+    _bench.detail_with(|| format!("{} keep_camera={keep_camera}", loaded.data.name));
     if let Some(old) = ps.scene.take() {
         commands.entity(old.built.root).despawn();
     }
@@ -411,6 +460,7 @@ pub fn show_loaded(
         }
     );
     // Legend for the "section colours" view (press C in the preview).
+    let _legend = crate::benchmark::work("preview.section_legend_println");
     for (i, s) in loaded.data.sections.iter().enumerate() {
         println!(
             "[preview] section {i}: material '{}', {} triangles, colour {}",
@@ -419,6 +469,7 @@ pub fn show_loaded(
             section_color(i).to_srgba().to_hex()
         );
     }
+    drop(_legend);
     ps.scene = Some(PreviewScene { loaded, built });
     ps.scene_gen += 1;
 }
@@ -430,6 +481,7 @@ pub fn controls(
     dialog: Res<crate::dialog::ReplaceDialog>,
     editing: Res<crate::textedit::Editing>,
 ) {
+    let _bench = crate::benchmark::sys("sys.preview.controls");
     if search.focused || dialog.pending.is_some() || editing.active() {
         return; // typing in the search bar must not toggle the preview options
     }
@@ -457,7 +509,9 @@ pub fn apply_opts(
     mut roots: Query<&mut Transform>,
     mut studio: Query<&mut Visibility, (With<StudioLight>, Without<ThumbLight>)>,
     mut thumb: Query<&mut Visibility, (With<ThumbLight>, Without<StudioLight>)>,
+    mut head: Query<&mut Visibility, (With<HeadLight>, Without<StudioLight>, Without<ThumbLight>)>,
 ) {
+    let _bench = crate::benchmark::sys("sys.preview.apply_opts");
     let opts_changed = opts.is_changed();
     let scene_new = ps.scene_gen != *last_gen;
     *last_gen = ps.scene_gen;
@@ -473,6 +527,13 @@ pub fn apply_opts(
             };
         }
         for mut v in &mut thumb {
+            *v = if opts.thumb_lights {
+                Visibility::Inherited
+            } else {
+                Visibility::Hidden
+            };
+        }
+        for mut v in &mut head {
             *v = if opts.thumb_lights {
                 Visibility::Inherited
             } else {
@@ -633,6 +694,7 @@ pub fn preview_resize(
     mut images: ResMut<Assets<Image>>,
     mut ps: ResMut<PreviewState>,
 ) {
+    let _bench = crate::benchmark::sys("sys.preview.preview_resize");
     let Ok(c) = nodes.get(refs.container) else {
         return;
     };
@@ -650,6 +712,24 @@ pub fn preview_resize(
     }
 }
 
+/// The world look's tone curve: none, exactly what the preview had before the world-look work (the game look has no
+/// curve: values above 1 clip). Tried and dropped: `AcesFitted` (dark, over-saturated) and Blender filmic (lost its
+/// colour contrast). Alternatives: `TonyMcMapface`, `ReinhardLuminance`, `AcesFitted`.
+const WORLD_TONEMAP: Tonemapping = Tonemapping::None;
+/// Exposure of the world look in stops, added to Bevy's default (9.7): positive = darker. 0.2 stop = 13 % less light, "the
+/// initial look, ever so slightly darker" (user). It does not change emissive glow (alpha 0 emissive ignores exposure).
+const WORLD_EV_OFFSET: f32 = 0.2;
+/// Colour saturation after the tone curve (1 = untouched). 1.0: no grading, as before the world-look work.
+const WORLD_SATURATION: f32 = 1.0;
+
+fn world_grading(look: bool) -> ColorGrading {
+    let mut g = ColorGrading::default();
+    if look {
+        g.global.post_saturation = WORLD_SATURATION;
+    }
+    g
+}
+
 /// The game's icon look and view (options L and G) and the light that turns with the camera (S switches it off).
 /// Look: its two lights aimed for the model on stage, no ambient light, no tone curve, flat background. View: its camera
 /// (FOV 10 degrees, 12R away, from the front right above); switching it on moves the orbit camera there once,
@@ -664,6 +744,7 @@ pub fn thumb_rig_system(
     mut last: Local<(u64, bool, bool, bool, bool, bool)>, // scene_gen, thumb_lights, game_view, z_up, static_light, aa
     mut lights: Query<(&ThumbLight, &mut Transform, &mut DirectionalLight), Without<StudioLight>>,
     mut studio: Query<&mut Transform, (With<StudioLight>, Without<ThumbLight>)>,
+    mut head: Query<&mut Transform, (With<HeadLight>, Without<StudioLight>, Without<ThumbLight>)>,
     mut cam: Query<
         (
             &mut Projection,
@@ -671,10 +752,20 @@ pub fn thumb_rig_system(
             &mut AmbientLight,
             &mut Tonemapping,
             &mut Msaa,
+            &mut Exposure,
+            &mut ColorGrading,
         ),
         With<PreviewCamera>,
     >,
 ) {
+    let _bench = crate::benchmark::sys("sys.preview.thumb_rig_system");
+    // The head light follows the camera at all times (also with the static light on).
+    let cam_rot = Quat::from_euler(EulerRot::YXZ, orbit.yaw, -orbit.pitch, 0.0);
+    if let Ok(mut t) = head.single_mut() {
+        if t.rotation != cam_rot {
+            t.rotation = cam_rot;
+        }
+    }
     let now = (
         ps.scene_gen,
         opts.thumb_lights,
@@ -690,18 +781,30 @@ pub fn thumb_rig_system(
     }
     *last = now;
     if settings_changed {
-        if let Ok((mut proj, mut camera, mut ambient, mut tone, mut msaa)) = cam.single_mut() {
+        if let Ok((mut proj, mut camera, mut ambient, mut tone, mut msaa, mut exposure, mut grading)) =
+            cam.single_mut()
+        {
             let look = opts.thumb_lights;
             // Anti-aliasing is its own option (M), independent of the icon look. The icons are smoothed too (icons.rs,
             // `ICON_MSAA`; the editor's Regenerate icon follows this option).
             *msaa = if opts.aa { Msaa::Sample4 } else { Msaa::Off };
-            // The same global brightness in the studio view and in the game look, so unlit parts are never black.
-            ambient.brightness = crate::gamerig::AMBIENT_BRIGHTNESS;
+            // World look (L, the default): what the game's WORLD renderer shows, not its icon renderer. UE4 tone-maps with a
+            // filmic S-curve (more contrast than Bevy's default neutral TonyMcMapface; `AcesFitted` was too heavy, it
+            // crushed the darks and over-saturated the reds, so `WORLD_TONEMAP` is the gentler Blender filmic)
+            // and a night scene has almost no ambient light, so shadows stay dark. The studio view
+            // (L off) keeps the global ambient and the default curve. Icons are not affected (icons.rs has its own rig).
+            ambient.brightness = if look {
+                crate::gamerig::WORLD_AMBIENT_BRIGHTNESS
+            } else {
+                crate::gamerig::AMBIENT_BRIGHTNESS
+            };
             *tone = if look {
-                Tonemapping::None
+                WORLD_TONEMAP
             } else {
                 Tonemapping::default()
             };
+            exposure.ev100 = Exposure::EV100_BLENDER + if look { WORLD_EV_OFFSET } else { 0.0 };
+            *grading = world_grading(look);
             let clear = if look {
                 gamerig::BACKGROUND
             } else {
@@ -785,6 +888,7 @@ pub fn hull_gizmos(
     mut redraw: EventWriter<RequestRedraw>,
     mut last: Local<Option<(bool, u64, Option<Transform>)>>,
 ) {
+    let _bench = crate::benchmark::sys("sys.preview.hull_gizmos");
     let root_tf = ps
         .scene
         .as_ref()
@@ -822,6 +926,7 @@ pub fn printer_gizmos(
     mut redraw: EventWriter<RequestRedraw>,
     mut last: Local<Option<(bool, u64, bool)>>,
 ) {
+    let _bench = crate::benchmark::sys("sys.preview.printer_gizmos");
     let now = (opts.printer_limits, ps.scene_gen, opts.z_up);
     if *last != Some(now) {
         *last = Some(now);
@@ -880,6 +985,7 @@ pub fn lamp_gizmos(
     mut redraw: EventWriter<RequestRedraw>,
     mut last: Local<Option<(bool, u64, Option<Transform>, Option<(Vec3, [f32; 3])>)>>,
 ) {
+    let _bench = crate::benchmark::sys("sys.preview.lamp_gizmos");
     let root_tf = ps
         .scene
         .as_ref()
@@ -956,6 +1062,7 @@ pub fn printer_hud_system(
     mut texts: Query<&mut Text>,
     mut colors: Query<&mut TextColor>,
 ) {
+    let _bench = crate::benchmark::sys("sys.preview.printer_hud_system");
     let lines = match &ps.scene {
         Some(sc) => crate::printer::report(
             crate::printer::model_half(sc.loaded.data.half, opts.z_up),
@@ -1006,6 +1113,7 @@ pub fn preview_text(
     mut texts: Query<&mut Text, Without<OptLabel>>,
     mut labels: Query<(&OptLabel, &mut Text)>,
 ) {
+    let _bench = crate::benchmark::sys("sys.preview.preview_text");
     if ps.is_changed() || layout.is_changed() {
         let header = ps.header.as_str();
         if let Ok(mut t) = texts.get_mut(refs.header_text) {
@@ -1025,5 +1133,25 @@ pub fn preview_text(
         for (l, mut t) in &mut labels {
             t.0 = opt_text(l.0, &opts);
         }
+    }
+}
+
+/// Properties-only mode: the cfg of the model on stage follows the sliders at once (the lamp marker and the printer
+/// volumes read it every frame); the file and the reloaded model (texture filters) follow after the save delay.
+pub fn props_live_cfg_system(conv: Res<crate::converter::ConvertState>, layout: Res<Layout>, mut ps: ResMut<PreviewState>) {
+    let _bench = crate::benchmark::sys("sys.preview.props_live_cfg_system");
+    if !layout.converter || conv.props.is_none() || !conv.is_changed() {
+        return;
+    }
+    let Some(scene) = ps.scene.as_mut() else { return };
+    let text = conv.opts.properties.to_cfg_string(conv.props_emissive);
+    let mut cfg = std::collections::HashMap::new();
+    for line in text.lines() {
+        if let Some((k, v)) = line.split_once('=') {
+            cfg.insert(k.trim().to_string(), v.trim().to_string());
+        }
+    }
+    if scene.loaded.data.cfg != cfg {
+        scene.loaded.data.cfg = cfg;
     }
 }

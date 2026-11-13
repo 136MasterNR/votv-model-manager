@@ -24,9 +24,9 @@ use std::time::SystemTime;
 use image::RgbaImage;
 
 use crate::atlas::Placement;
-use crate::collision::RawHulls;
+use crate::collision::{self, Generated, RawHulls};
 use crate::icon::IconTri;
-use crate::options::EmissiveMode;
+use crate::options::{EmissiveMode, PngLevel};
 use crate::report::Diagnostic;
 use crate::scene::Scene;
 
@@ -89,7 +89,8 @@ pub(crate) struct AtlasEntry {
     pub red_slot: Option<usize>,
     pub diags: Vec<Diagnostic>,
     /// Compressed PNG bytes, filled on first use: [diffuse, emissive, normal, pbr].
-    pub png: Mutex<[Option<Arc<Vec<u8>>>; 4]>,
+    /// One lock per map so the maps can be compressed on different threads. Remembers the level the bytes were made with.
+    pub png: [Mutex<Option<(PngLevel, Arc<Vec<u8>>)>>; 4],
 }
 
 #[derive(Clone, PartialEq)]
@@ -123,6 +124,33 @@ pub(crate) struct HullKey {
 
 pub(crate) struct HullEntry {
     pub raw: Result<RawHulls, String>,
+    /// Microseconds the decomposition itself took (for `Report::timings`).
+    pub generate_micros: u64,
+    /// Trimmed hulls per face cap. The trim is deterministic and not free (re-hulling big hulls), so a repeat run with the same cap reuses it.
+    trimmed: Mutex<Vec<(usize, Arc<Generated>)>>,
+}
+
+impl HullEntry {
+    pub(crate) fn new(raw: Result<RawHulls, String>, generate_micros: u64) -> Self {
+        HullEntry { raw, generate_micros, trimmed: Mutex::new(Vec::new()) }
+    }
+
+    /// The hulls with every hull cut down to at most `cap` faces. `None` when the decomposition produced no hulls at all (`raw` is an error).
+    pub(crate) fn trimmed(&self, cap: usize) -> Option<Arc<Generated>> {
+        let raw = self.raw.as_ref().ok()?;
+        let mut memo = self.trimmed.lock().ok();
+        if let Some(m) = memo.as_ref() {
+            if let Some((_, g)) = m.iter().find(|(c, _)| *c == cap) {
+                return Some(g.clone());
+            }
+        }
+        let g = Arc::new(collision::trim(raw, cap));
+        if let Some(m) = memo.as_mut() {
+            m.insert(0, (cap, g.clone()));
+            m.truncate(4);
+        }
+        Some(g)
+    }
 }
 
 fn lru_get<K: PartialEq, V>(v: &mut Vec<(K, Arc<V>)>, k: &K) -> Option<Arc<V>> {

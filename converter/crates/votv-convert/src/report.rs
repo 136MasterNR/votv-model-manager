@@ -168,6 +168,19 @@ pub struct Stats {
     pub health_in_game: Option<f64>,
 }
 
+/// How long one stage took (wall clock). The listed stages follow each other and sum to roughly `total`, but work now overlaps:
+/// the convex decomposition (VHACD) starts right after `prepare` and the PNG encoders right after `atlas`, both on their own threads.
+/// So `collision` and `png` are the time spent *waiting* for those threads (near zero when they were already done), and
+/// `vhacd_generate` is the decomposition's own run time (when it actually ran), which overlaps `atlas` / `geometry` and is not part of the sum.
+/// `atlas_swatches`, `atlas_pack` and `atlas_maps` (the extra maps plus the diffuse shrink) split the `atlas` stage (also nested, not part of the sum; absent when the atlas came from the cache).
+/// Stages: `load`, `prepare`, `atlas`, `geometry`, `collision`, `png`, `files`, `obj_verify_swap`, `total`.
+/// A stage served from the `ConvertCache` shows up as a tiny number.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StageTiming {
+    pub stage: String,
+    pub micros: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OutputFile {
     pub name: String,
@@ -188,6 +201,8 @@ pub struct Report {
     pub properties_kept: bool,
     /// Stages that were reused from the [`ConvertCache`] this run (`scene`, `atlas`, `geometry`, `collision`); empty without a cache.
     pub cache_hits: Vec<String>,
+    /// Per-stage wall-clock timings of this run (see [`StageTiming`]).
+    pub timings: Vec<StageTiming>,
     /// Extra files written next to the model (`icon.png`, `votv_convert.json`), if requested.
     pub extras: Vec<String>,
 }
@@ -282,11 +297,12 @@ pub(crate) struct Ctx<'a> {
     pub hooks: &'a Hooks,
     pub diags: Vec<Diagnostic>,
     pub cache_hits: Vec<&'static str>,
+    pub timings: Vec<(&'static str, u64)>,
 }
 
 impl<'a> Ctx<'a> {
     pub fn new(hooks: &'a Hooks) -> Self {
-        Self { hooks, diags: Vec::new(), cache_hits: Vec::new() }
+        Self { hooks, diags: Vec::new(), cache_hits: Vec::new(), timings: Vec::new() }
     }
     pub fn emit(&mut self, severity: Severity, code: DiagCode, message: impl Into<String>) {
         let d = Diagnostic { severity, code, message: message.into() };
@@ -294,6 +310,11 @@ impl<'a> Ctx<'a> {
             f(&d);
         }
         self.diags.push(d);
+    }
+    /// Record the time since `mark` under `name` and restart the mark.
+    pub fn lap(&mut self, mark: &mut std::time::Instant, name: &'static str) {
+        self.timings.push((name, mark.elapsed().as_micros() as u64));
+        *mark = std::time::Instant::now();
     }
     /// Re-emit messages that were recorded during an earlier run (cached stages).
     pub fn replay(&mut self, diags: &[Diagnostic]) {

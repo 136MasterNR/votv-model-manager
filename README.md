@@ -5,7 +5,7 @@
 
 An app for managing your custom **3D printer models** in [Voices of the Void](https://mrdrnose.itch.io/votv).
 
-Browse your models, check them in a 3D viewer, and drag any `.glb` onto the window to turn it into a model the game can print. Portable GUI.
+Browse your models, check them in a 3D viewer, and drag any `.glb` onto the window to turn it into a model the game can print.
 
 ![demo](readme/demo.webp)
 
@@ -61,19 +61,19 @@ Each section header has its own sort button. Click it to cycle **Last Added**, *
 
 ### Select one or many
 
-Click selects a model, **Ctrl + click** adds or removes one, **Shift + click** selects everything from the last clicked model to this one. The toolbar above the list works on all selected models, and hovering a button shows what it does and which models it will touch.
+Click selects a model, **Ctrl + click** adds or removes one, **Shift + click** selects everything from the last clicked model to this one.
 
 ![](readme/select.gif)
 
 ### Rename
 
-Renames the model and every file that carries its name, including the textures, and keeps the references inside the model files in step. The name on the tile becomes a text field (Enter confirms, Escape cancels).
+Renames the model and every file that carries its name, including the textures, and keeps the references inside the model files in step.
 
 ![](readme/rename.gif)
 
 ### Regenerate icons
 
-Makes fresh icons for the selected models, using the game's own viewpoint.
+Makes fresh icons for the selected models.
 
 ![](readme/regen-icons.gif)
 
@@ -97,13 +97,13 @@ Removes models for good. The red button asks for a second click first.
 
 ### Import ready-made models
 
-Drop model folders or `.zip` files onto the list, or use the **Drop folders / .zip here** tile (click for a folder picker, Shift + click for a `.zip` picker). They are copied into your printer folder. Nothing is ever overwritten: a name that already exists becomes `name_2`, `name_3` and so on.
+Drop model folders or archives (`.zip`, `.7z` or `.rar`) onto the list, or click the first tile to browse for them. They are unpacked into your printer folder. Every folder inside that holds an `.obj` becomes a model; other files in the archive (sources, previews) are left out. A model is refused unless its name matches its diffuse texture: the model folder (or the archive, for an `.obj` at its root) must be called like the `diffuse_<name>.png` it contains, in any letter case. If the model folder holds other `diffuse_*.png` files, you are asked which one to use: the one you pick is added to the model as `diffuse_<name>.png` (the original file stays). You can also choose **Import anyway** to copy the model without a diffuse of its name (also when it has no diffuse texture at all). Only the models you skip are left out: they are listed in the status line, and the other models of the same archive are still imported. Nothing is ever overwritten: a name that is taken gets `_2`, `_3`, ... Password-protected archives and multi-part RAR sets are not supported.
 
 ![](readme/import.gif)
 
 ### Export a model to share
 
-The **Export** button above the preview (it appears while a model is selected, EDITABLE or not) saves a model as a `.zip` that you can share safely: it does not contain the editable `.glb`, so others cannot use it to edit your model.
+The **Export** button above the preview saves a model as a `.zip` that you can share. It does not contain the `.glb`, so others cannot edit your model with it.
 
 Select several tiles (Ctrl + click, Shift + click for a range) and the button reads **Export Bundle**: it saves all the selected models into ONE `.zip`, each in its own folder, with the same rule (no editable `.glb`).
 
@@ -125,11 +125,13 @@ Rotate with the left mouse button, move the view with the right one, zoom with t
 
 ### View options
 
-The eye button at the bottom right of the preview opens the view options. Most have a key, shown in brackets, that toggles them.
+The eye button at the bottom right of the preview opens the view options. Most have a keybind, shown in brackets, that toggles them.
 
 ### See it like the game sees it
 
 **Game renderer look (L)** shows the model with the game's lighting and shading, as in its icon. **Game renderer view (G)** uses the game's icon camera. Switch them off for a plain studio view. Both the preview and the generated icons get a soft overall brightness (a third of every surface's own colour), so parts the light does not reach are dark rather than black.
+
+With **Game renderer look (L)** on, the preview is tuned to the game's WORLD at night (not its icon renderer): a filmic tone curve (`WORLD_TONEMAP` in `preview.rs`: no curve, as before, `WORLD_EV_OFFSET` = +0.2 stop (slightly darker), `WORLD_SATURATION` 1.0) for the game's contrast, a small ambient light (`gamerig::WORLD_AMBIENT_FRACTION`, 12 %) so shadows stay dark, and a roughness floor (`scene::WORLD_ROUGHNESS_MIN`, 0.7) that softens the highlights the game does not show (not on glowing glass or metal), and a faint light along the view direction (`gamerig::HEADLIGHT_INTENSITY`) that gives smooth surfaces such as the crystal their white glint. A lamp's coloured light is its physical strength (`scene::LAMP_GAIN`, 4 pi lumens per `lamp_intensity`). The pbr map is read per texel the way the game packs it (red metallic, green specular, blue roughness): a texel without specular that is not metal is matte (`model::pbr_texel`), so the crystal lamp's vines and pad are matte while its metallic crystal keeps its reflections. (An ORM detection exists, `model::PBR_ORM_AUTODETECT`, but it is off: it misread that crystal.) Generated icons keep their own look.
 
 ### Debug views
 
@@ -245,6 +247,10 @@ The logs button at the bottom left of the preview shows what the converter did: 
 
 Select a model from the EDITABLE section and click **Edit** above the preview: it reopens with all the settings it was made with.
 
+### Properties (models without a saved .glb)
+
+A model in the MODELS section cannot be reopened in the converter, but its game properties can still be changed: select it and click the orange **Properties** button above the preview (where **Edit** appears for editable models). The editor opens with the usual header (icon, **Capture as icon**, the name with its rename pencil, and the short list of the properties in effect) and only the property sections (Durability, Material, Light, Texture filters). Nothing is converted and no other program is involved; changes are saved to the model's `properties.cfg` by themselves, a moment after you stop changing a value, and the preview follows. Unknown keys in the file are kept, but the first save rewrites the file in the converter's format (key order and comments are not preserved).
+
 ## Blender
 
 ### Open in Blender
@@ -283,7 +289,7 @@ The small gray number next to the app name is the build number. Mention it when 
 ## Good to know
 
 - Only **.glb** files can be converted. Other file types are ignored.
-- Dropping a model **folder** or a model **.zip** copies it into your library instead of converting it.
+- Dropping a model **folder** or a model archive (**.zip**, **.7z**, **.rar**) copies it into your library instead of converting it.
 - The first time the 3D view opens there may be a short pause while it gets ready.
 - Names with non-English letters may show up as boxes in the list.
 - **Open in Blender** appears only when Blender is found. If it is not, set it under the gear menu, **Blender path...**.
@@ -311,13 +317,15 @@ or for debugging:
 cargo run --features bevy/dynamic_linking
 ```
 
+### Benchmark mode
+
+`votv-model-manager.exe --benchmark` (or `--benchmark="D:\some\folder"`) records how long every workload takes: folder scan, tile building, icon loading and rendering, model and texture loading, preview building, every converter stage, export, import, each per-frame system, frame times, CPU and memory. Use the app normally, close it, and send the run folder (default: `%LocalAppData%\VotV Model Manager\benchmark\run-<time>\`, its path is also in `benchmark\LAST_RUN.txt`; start with `summary.txt`). Without the flag nothing is recorded. The code is in `src/benchmark.rs`.
+
+### Graphics backend
+
+On Windows the app starts with Vulkan only, which launches faster and avoids a multi-second freeze the first time a model is shown with DirectX 12. If a start with Vulkan never gets as far as drawing its first frame (no working Vulkan driver), the next start switches to automatic selection and remembers it (the file `backend-auto` in `%LocalAppData%\VotV Model Manager\`; delete it to try Vulkan again). `--backend=vulkan`, `--backend=dx12` or `--backend=auto` overrides this.
+
 The build number in the title bar is the GitHub Actions run number (`GITHUB_RUN_NUMBER`, passed in by `build.rs`); a local build has none, so nothing is shown.
-
-Icons come from Google's Material Icons font plus a tiny Material Symbols subset (both Apache-2.0); see `docs/icon-fonts.md`.
-
-README pictures live in `docs/media/` (see `docs/media/SHOT-LIST.md`).
-
-More technical notes are in `docs/` and `converter/README.md`.
 
 ## Disclosure
 

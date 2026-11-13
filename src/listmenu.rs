@@ -201,6 +201,7 @@ pub fn search_input_system(
     ints: Query<&Interaction>,
     mut s: ResMut<Search>,
 ) {
+    let _bench = crate::benchmark::sys("sys.listmenu.search_input_system");
     if mouse.just_pressed(MouseButton::Left) && s.focused {
         let over = |e: Entity| {
             ints.get(e)
@@ -253,6 +254,7 @@ pub fn search_visuals_system(
     mut colors: Query<&mut TextColor>,
     mut borders: Query<&mut BorderColor>,
 ) {
+    let _bench = crate::benchmark::sys("sys.listmenu.search_visuals_system");
     if !s.is_changed() {
         return;
     }
@@ -305,6 +307,7 @@ pub fn filter_system(
     mut texts: Query<&mut Text>,
     mut last: Local<String>,
 ) {
+    let _bench = crate::benchmark::sys("sys.listmenu.filter_system");
     if !search.is_changed() && !lib.is_changed() && added.is_empty() {
         return;
     }
@@ -524,6 +527,8 @@ fn perform(action: ToolAction, bar: &mut Toolbar, lib: &mut Library, layout: &mu
     if sel.is_empty() {
         return;
     }
+    let mut _bench = crate::benchmark::work("menu.perform");
+    _bench.detail_with(|| format!("{action:?} on {} models", sel.len()));
     let single = (sel.len() == 1).then(|| sel[0]);
     match action {
         ToolAction::Open => {
@@ -619,6 +624,7 @@ pub fn toolbar_system(
     mut nodes: Query<&mut Node>,
     children: Query<&Children>,
 ) {
+    let _bench = crate::benchmark::sys("sys.listmenu.toolbar_system");
     let key = (lib.generation, lib.selection.iter().copied().collect::<Vec<_>>());
     if bar.key != key {
         bar.key = key;
@@ -744,6 +750,7 @@ pub struct SettingsRefs {
 
 /// Click on the "Settings" button.
 pub fn toggle_settings(t: Trigger<Pointer<Click>>, mut m: ResMut<SettingsMenu>) {
+    let _bench = crate::benchmark::work("ui.listmenu.toggle_settings");
     if primary(&t) {
         m.open = !m.open;
     }
@@ -848,6 +855,7 @@ pub fn settings_menu_system(
     ints: Query<&Interaction>,
     mut nodes: Query<&mut Node>,
 ) {
+    let _bench = crate::benchmark::sys("sys.listmenu.settings_menu_system");
     if m.open {
         let over = [
             refs.button,

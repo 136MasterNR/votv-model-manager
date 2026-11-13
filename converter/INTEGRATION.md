@@ -46,6 +46,11 @@ Never prints, prompts or exits. `ConvertError::kind()` is a stable tag; `Display
 if a real glow map is wrongly reinterpreted. Their effects appear as `Info` diagnostics (`emissive_used_as_colour`, `emissive_duplicate_ignored`, `emissive_ignored`,
 `outline_dropped`, `alpha_cutout`), which the GUI can show in its log. `inspect()` lists the emission ones in `hints` so the panel can explain them before converting.
 
+## PNG level and speed
+`png_level` (Fast / Balanced / Best, default **Balanced**): pixels are identical, only file size and compression time differ. Measured on the test models, Balanced is 4-6x faster than Best for files 0.5-1.3% larger, and Fast is
+about 30x faster for files 11-15% larger. Suggested use: `Fast` for the live-preview conversions while sliders are being moved, `Balanced` (the default) for the installed model, `Best` only if the smallest possible files matter. The converter compresses the maps on separate threads (up to four) that overlap with geometry and collision, so a conversion briefly uses several cores.
+The cache keeps the compressed bytes per level, so toggling between levels re-encodes only when the level actually changes.
+
 ## Metallic
 Two conversion options, both sliders: `metallic_scale` (0-1 multiplier, default 1) and `metallic_max` (0-1 cap, default 0.75).
 Measured in the game with a calibration grid (same orange diffuse, metallic 0/64/128/192/255 x roughness 40/128/220): only metallic 255 with low or medium roughness renders dark

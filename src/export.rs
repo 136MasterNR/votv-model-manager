@@ -69,6 +69,8 @@ fn folder_name(dir: &Path) -> String {
 }
 
 fn run(folders: &[PathBuf]) -> Outcome {
+    let mut _bench = crate::benchmark::work("export.run");
+    _bench.detail_with(|| format!("{} models", folders.len()));
     let models: Vec<(PathBuf, String)> = folders.iter().map(|d| (d.clone(), folder_name(d))).collect();
     let bundle = models.len() > 1;
     let suggested = if bundle { "VotV models bundle".to_string() } else { models[0].1.clone() };
@@ -115,12 +117,14 @@ fn collect(dir: &Path, prefix: &str, out: &mut Vec<(PathBuf, String)>) -> io::Re
 /// One model into a fresh archive: `<name>/...`. See `write_bundle`.
 #[cfg(test)]
 fn write_zip(dir: &Path, name: &str, dest: &Path) -> Result<usize, String> {
+    let _bench = crate::benchmark::work("export.write_zip");
     write_bundle(&[(dir.to_path_buf(), name.to_string())], dest)
 }
 
 /// Writes every `(model folder, name)` into ONE archive, each as its own `<name>/...` folder, without the internal files.
 /// Returns how many files were packed in total.
 fn write_bundle(models: &[(PathBuf, String)], dest: &Path) -> Result<usize, String> {
+    let _bench = crate::benchmark::work("export.write_bundle");
     let mut all = Vec::new(); // (name, files of that model)
     for (dir, name) in models {
         let mut files = Vec::new();
@@ -175,6 +179,7 @@ fn export_dirs(lib: &Library) -> Vec<PathBuf> {
 
 /// Click on the Export button above the preview: exports the selected model, or the selected models as one bundle.
 pub fn on_header_click(t: Trigger<Pointer<Click>>, lib: Res<Library>, mut job: ResMut<ExportJob>) {
+    let _bench = crate::benchmark::work("ui.export.on_header_click");
     if t.event().button != PointerButton::Primary {
         return;
     }
@@ -189,6 +194,7 @@ pub fn button_system(
     mut q: Query<&mut Node, With<HeaderExport>>,
     mut labels: Query<&mut Text, With<HeaderExportLabel>>,
 ) {
+    let _bench = crate::benchmark::sys("sys.export.button_system");
     let count = export_dirs(&lib).len();
     let several = count > 1;
     let shown = layout.preview_open && !layout.converter && count > 0;
@@ -208,6 +214,7 @@ pub fn button_system(
 
 /// Collects the finished export and reports it on the status line.
 pub fn poll_system(mut job: ResMut<ExportJob>, mut layout: ResMut<Layout>) {
+    let _bench = crate::benchmark::sys("sys.export.poll_system");
     let outcome = match job.rx.as_ref() {
         None => return,
         Some(rx) => match rx.lock().unwrap().try_recv() {

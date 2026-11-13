@@ -11,6 +11,7 @@
 use bevy::prelude::*;
 
 pub fn round_corners(mut done: Local<bool>, mut tries: Local<u32>) {
+    let _bench = crate::benchmark::sys("sys.window_style.round_corners");
     if *done || *tries > 1000 {
         return;
     }
